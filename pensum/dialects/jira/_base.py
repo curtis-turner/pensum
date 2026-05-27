@@ -1,0 +1,634 @@
+"""Shared Jira dialect base. DC and Cloud subclass this and override the bits
+that diverge: ``api_root`` and the option-reflection path (Cloud uses field
+contexts; DC hits /option directly).
+"""
+
+from __future__ import annotations
+
+from typing import Any, ClassVar
+
+from pensum.client.http import JiraHTTPClient
+from pensum.dialects.jira import common
+from pensum.exceptions import ReflectionError
+from pensum.state.snapshot import (
+    CustomFieldSnapshot,
+    FieldConfigurationItemSnapshot,
+    FieldConfigurationSchemeSnapshot,
+    FieldConfigurationSnapshot,
+    IssueTypeScreenSchemeSnapshot,
+    IssueTypeSnapshot,
+    ProjectSnapshot,
+    ScreenSchemeSnapshot,
+    ScreenSnapshot,
+    ScreenTabSnapshot,
+    ServerInfoSnapshot,
+    Snapshot,
+)
+
+
+class JiraDialectBase:
+    """Shared reflection skeleton for DC and Cloud."""
+
+    name: ClassVar[str] = "jira_base"
+    api_root: ClassVar[str] = "/rest/api/2"
+    expected_deployment_type: ClassVar[str] = "Server"
+
+    def __init__(self, client: JiraHTTPClient) -> None:
+        self.client = client
+
+    # ── Detection ────────────────────────────────────────────────────
+    async def detect(self) -> bool:
+        info = await self._server_info()
+        return info.deployment_type == self.expected_deployment_type
+
+    async def _server_info(self) -> ServerInfoSnapshot:
+        payload = await self.client.get_json(f"{self.api_root}/serverInfo")
+        return ServerInfoSnapshot(
+            deployment_type=str(payload.get("deploymentType", "")),
+            version=str(payload.get("version", "")),
+            base_url=str(payload.get("baseUrl", self.client.base_url)),
+        )
+
+    # ── Full reflection ──────────────────────────────────────────────
+    async def reflect(self) -> Snapshot:
+        info = await self._server_info()
+        custom_fields = await self._reflect_custom_fields()
+        issuetypes = await self._reflect_issuetypes()
+        projects = await self._reflect_projects()
+        screens = await self._reflect_screens()
+        screen_schemes = await self._reflect_screen_schemes()
+        itss = await self._reflect_issuetype_screen_schemes()
+        field_configurations = await self._reflect_field_configurations()
+        fcs = await self._reflect_field_configuration_schemes()
+        return Snapshot(
+            server_info=info,
+            custom_fields=custom_fields,
+            issuetypes=issuetypes,
+            projects=projects,
+            screens=screens,
+            screen_schemes=screen_schemes,
+            issuetype_screen_schemes=itss,
+            field_configurations=field_configurations,
+            field_configuration_schemes=fcs,
+        )
+
+    # ── Custom fields ────────────────────────────────────────────────
+    async def _reflect_custom_fields(self) -> dict[str, CustomFieldSnapshot]:
+        raw_fields = await self.client.get_json(f"{self.api_root}/field")
+        if not isinstance(raw_fields, list):
+            raise ReflectionError(f"{self.api_root}/field returned non-list: {type(raw_fields)}")
+        result: dict[str, CustomFieldSnapshot] = {}
+        for entry in raw_fields:
+            if not common.is_custom_field(entry):
+                continue
+            cf = common.parse_custom_field(entry)
+            if common.is_select_style(cf.type_id):
+                options = await self._reflect_field_options(cf.id)
+                cf = CustomFieldSnapshot(
+                    id=cf.id, name=cf.name, type_id=cf.type_id, options=options,
+                )
+            result[cf.id] = cf
+        return result
+
+    async def _reflect_field_options(self, field_id: str) -> dict[str, str]:
+        """Default DC behavior: GET /field/{id}/option (paginated).
+
+        Cloud overrides this because option access lives under a field
+        context.
+        """
+        items: list[dict] = []
+        async for opt in common.paginate(self.client, f"{self.api_root}/field/{field_id}/option"):
+            items.append(opt)
+        return common.parse_field_options(items)
+
+    # ── Issue types ──────────────────────────────────────────────────
+    async def _reflect_issuetypes(self) -> dict[str, IssueTypeSnapshot]:
+        raw = await self.client.get_json(f"{self.api_root}/issuetype")
+        if not isinstance(raw, list):
+            raise ReflectionError(f"{self.api_root}/issuetype returned non-list: {type(raw)}")
+        return {it.id: it for it in (common.parse_issuetype(p) for p in raw)}
+
+    # ── Projects ─────────────────────────────────────────────────────
+    async def _reflect_projects(self) -> dict[str, ProjectSnapshot]:
+        result: dict[str, ProjectSnapshot] = {}
+        async for entry in common.paginate(self.client, f"{self.api_root}/project/search"):
+            proj = common.parse_project(entry)
+            result[proj.key] = proj
+        return result
+
+    # ── Screens ──────────────────────────────────────────────────────
+    async def _reflect_screens(self) -> dict[str, ScreenSnapshot]:
+        screens: dict[str, ScreenSnapshot] = {}
+        async for entry in common.paginate(self.client, f"{self.api_root}/screens"):
+            header = common.parse_screen_header(entry)
+            tabs = await self._reflect_screen_tabs(header.id)
+            screens[header.id] = ScreenSnapshot(
+                id=header.id,
+                name=header.name,
+                description=header.description,
+                tabs=tuple(tabs),
+            )
+        return screens
+
+    async def _reflect_screen_tabs(self, screen_id: str) -> list[ScreenTabSnapshot]:
+        raw_tabs = await self.client.get_json(f"{self.api_root}/screens/{screen_id}/tabs")
+        if not isinstance(raw_tabs, list):
+            raise ReflectionError(
+                f"{self.api_root}/screens/{screen_id}/tabs returned non-list"
+            )
+        out: list[ScreenTabSnapshot] = []
+        for tab in raw_tabs:
+            tab_id = str(tab.get("id", ""))
+            raw_fields = await self.client.get_json(
+                f"{self.api_root}/screens/{screen_id}/tabs/{tab_id}/fields"
+            )
+            if not isinstance(raw_fields, list):
+                raise ReflectionError(
+                    f"tab {tab_id} on screen {screen_id} returned non-list fields"
+                )
+            out.append(common.parse_screen_tab(tab, raw_fields))
+        return out
+
+    # ── Screen schemes ───────────────────────────────────────────────
+    async def _reflect_screen_schemes(self) -> dict[str, ScreenSchemeSnapshot]:
+        result: dict[str, ScreenSchemeSnapshot] = {}
+        async for entry in common.paginate(self.client, f"{self.api_root}/screenscheme"):
+            ss = common.parse_screen_scheme(entry)
+            result[ss.id] = ss
+        return result
+
+    # ── Issue-type screen schemes ────────────────────────────────────
+    async def _reflect_issuetype_screen_schemes(
+        self,
+    ) -> dict[str, IssueTypeScreenSchemeSnapshot]:
+        result: dict[str, IssueTypeScreenSchemeSnapshot] = {}
+        async for entry in common.paginate(self.client, f"{self.api_root}/issuetypescreenscheme"):
+            header = common.parse_itss_header(entry)
+            mappings = await self._reflect_itss_mappings(header.id)
+            result[header.id] = IssueTypeScreenSchemeSnapshot(
+                id=header.id,
+                name=header.name,
+                description=header.description,
+                mappings=tuple(mappings),
+            )
+        return result
+
+    async def _reflect_itss_mappings(self, scheme_id: str):
+        out = []
+        async for entry in common.paginate(
+            self.client,
+            f"{self.api_root}/issuetypescreenscheme/mapping",
+            extra_params={"issueTypeScreenSchemeId": scheme_id},
+        ):
+            out.append(common.parse_itss_mapping(entry))
+        return out
+
+    # ── Field configurations ─────────────────────────────────────────
+    async def _reflect_field_configurations(self) -> dict[str, FieldConfigurationSnapshot]:
+        result: dict[str, FieldConfigurationSnapshot] = {}
+        async for entry in common.paginate(self.client, f"{self.api_root}/fieldconfiguration"):
+            header = common.parse_field_configuration_header(entry)
+            items = await self._reflect_field_configuration_items(header.id)
+            result[header.id] = FieldConfigurationSnapshot(
+                id=header.id,
+                name=header.name,
+                description=header.description,
+                items=items,
+            )
+        return result
+
+    async def _reflect_field_configuration_items(
+        self, fc_id: str
+    ) -> dict[str, FieldConfigurationItemSnapshot]:
+        items: dict[str, FieldConfigurationItemSnapshot] = {}
+        async for entry in common.paginate(
+            self.client,
+            f"{self.api_root}/fieldconfiguration/{fc_id}/items",
+        ):
+            item = common.parse_field_configuration_item(entry)
+            if item.field_id:
+                items[item.field_id] = item
+        return items
+
+    # ── Field configuration schemes ──────────────────────────────────
+    async def _reflect_field_configuration_schemes(
+        self,
+    ) -> dict[str, FieldConfigurationSchemeSnapshot]:
+        result: dict[str, FieldConfigurationSchemeSnapshot] = {}
+        async for entry in common.paginate(
+            self.client, f"{self.api_root}/fieldconfigurationscheme"
+        ):
+            header = common.parse_fcs_header(entry)
+            mappings = await self._reflect_fcs_mappings(header.id)
+            result[header.id] = FieldConfigurationSchemeSnapshot(
+                id=header.id,
+                name=header.name,
+                description=header.description,
+                mappings=tuple(mappings),
+            )
+        return result
+
+    async def _reflect_fcs_mappings(self, scheme_id: str):
+        out = []
+        async for entry in common.paginate(
+            self.client,
+            f"{self.api_root}/fieldconfigurationscheme/mapping",
+            extra_params={"fieldConfigurationSchemeId": scheme_id},
+        ):
+            out.append(common.parse_fcs_mapping(entry))
+        return out
+
+    # ── Write-side operations (used by op API) ───────────────────────
+    async def create_custom_field(
+        self,
+        *,
+        name: str,
+        description: str,
+        type_id: str,
+        searcher_key: str | None = None,
+    ) -> str:
+        """POST /field. Returns the new field id (e.g. ``customfield_10042``)."""
+        body: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "type": type_id,
+        }
+        if searcher_key:
+            body["searcherKey"] = searcher_key
+        result = await self.client.post_json(f"{self.api_root}/field", json=body)
+        if not isinstance(result, dict) or "id" not in result:
+            raise ReflectionError(f"POST /field returned no id: {result!r}")
+        return str(result["id"])
+
+    async def add_custom_field_option(self, field_id: str, value: str) -> str:
+        """POST /field/{id}/option. Returns the new option id.
+
+        DC default. Cloud overrides because options live under field contexts.
+        """
+        result = await self.client.post_json(
+            f"{self.api_root}/field/{field_id}/option",
+            json={"value": value},
+        )
+        if not isinstance(result, dict) or "id" not in result:
+            raise ReflectionError(
+                f"POST /field/{field_id}/option returned no id: {result!r}"
+            )
+        return str(result["id"])
+
+    async def delete_custom_field(self, field_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/field/{field_id}")
+
+    async def update_custom_field(
+        self, field_id: str, *,
+        name: str | None = None, description: str | None = None,
+        searcher_key: str | None = None,
+    ) -> None:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if searcher_key is not None:
+            body["searcherKey"] = searcher_key
+        if not body:
+            return
+        await self.client.put_json(f"{self.api_root}/field/{field_id}", json=body)
+
+    async def delete_custom_field_option(
+        self, field_id: str, option_id: str,
+    ) -> None:
+        """DC: DELETE /field/{id}/option/{optId}. Cloud overrides."""
+        await self.client.delete(
+            f"{self.api_root}/field/{field_id}/option/{option_id}"
+        )
+
+    # ── Screens ──────────────────────────────────────────────────────
+    async def create_screen(self, *, name: str, description: str = "") -> str:
+        body: dict[str, Any] = {"name": name, "description": description}
+        result = await self.client.post_json(f"{self.api_root}/screens", json=body)
+        return _expect_id(result, f"POST {self.api_root}/screens")
+
+    async def delete_screen(self, screen_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/screens/{screen_id}")
+
+    async def update_screen(
+        self, screen_id: str, *,
+        name: str | None = None, description: str | None = None,
+    ) -> None:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if not body:
+            return
+        await self.client.put_json(f"{self.api_root}/screens/{screen_id}", json=body)
+
+    async def add_screen_tab(self, screen_id: str, *, name: str) -> str:
+        result = await self.client.post_json(
+            f"{self.api_root}/screens/{screen_id}/tabs", json={"name": name},
+        )
+        return _expect_id(result, f"POST /screens/{screen_id}/tabs")
+
+    async def add_screen_tab_field(
+        self, screen_id: str, tab_id: str, *, field_id: str,
+    ) -> None:
+        await self.client.post_json(
+            f"{self.api_root}/screens/{screen_id}/tabs/{tab_id}/fields",
+            json={"fieldId": field_id},
+        )
+
+    # ── Screen schemes ───────────────────────────────────────────────
+    async def create_screen_scheme(
+        self, *, name: str, description: str, screens: dict[str, str],
+    ) -> str:
+        body: dict[str, Any] = {
+            "name": name, "description": description, "screens": screens,
+        }
+        result = await self.client.post_json(f"{self.api_root}/screenscheme", json=body)
+        return _expect_id(result, f"POST {self.api_root}/screenscheme")
+
+    async def delete_screen_scheme(self, scheme_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/screenscheme/{scheme_id}")
+
+    async def update_screen_scheme(
+        self, scheme_id: str, *,
+        name: str | None = None, description: str | None = None,
+        screens: dict[str, str] | None = None,
+    ) -> None:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if screens is not None:
+            body["screens"] = screens
+        if not body:
+            return
+        await self.client.put_json(
+            f"{self.api_root}/screenscheme/{scheme_id}", json=body,
+        )
+
+    # ── Issue-type screen schemes ────────────────────────────────────
+    async def create_issuetype_screen_scheme(
+        self, *, name: str, description: str, mappings: list[dict[str, str]],
+    ) -> str:
+        """mappings: [{"issueTypeId": "...", "screenSchemeId": "..."}, ...].
+
+        Must include exactly one entry with issueTypeId == "default".
+        """
+        body: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "issueTypeMappings": mappings,
+        }
+        result = await self.client.post_json(
+            f"{self.api_root}/issuetypescreenscheme", json=body,
+        )
+        return _expect_id(result, f"POST {self.api_root}/issuetypescreenscheme")
+
+    async def delete_issuetype_screen_scheme(self, scheme_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/issuetypescreenscheme/{scheme_id}")
+
+    async def update_issuetype_screen_scheme(
+        self, scheme_id: str, *,
+        name: str | None = None, description: str | None = None,
+    ) -> None:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if not body:
+            return
+        await self.client.put_json(
+            f"{self.api_root}/issuetypescreenscheme/{scheme_id}", json=body,
+        )
+
+    async def set_issuetype_screen_scheme_mappings(
+        self, scheme_id: str, *, mappings: list[dict[str, str]],
+    ) -> None:
+        """Replace ITSS mappings. mappings: [{"issueTypeId": "...", "screenSchemeId": "..."}, ...]."""
+        await self.client.put_json(
+            f"{self.api_root}/issuetypescreenscheme/{scheme_id}/mapping",
+            json={"issueTypeMappings": mappings},
+        )
+
+    async def set_project_issuetype_screen_scheme(
+        self, *, project_id: str, scheme_id: str,
+    ) -> None:
+        await self.client.put_json(
+            f"{self.api_root}/issuetypescreenscheme/project",
+            json={"issueTypeScreenSchemeId": scheme_id, "projectId": project_id},
+        )
+
+    # ── Field configurations ─────────────────────────────────────────
+    async def create_field_configuration(
+        self, *, name: str, description: str = "",
+    ) -> str:
+        body: dict[str, Any] = {"name": name, "description": description}
+        result = await self.client.post_json(
+            f"{self.api_root}/fieldconfiguration", json=body,
+        )
+        return _expect_id(result, f"POST {self.api_root}/fieldconfiguration")
+
+    async def delete_field_configuration(self, fc_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/fieldconfiguration/{fc_id}")
+
+    async def set_field_configuration_item(
+        self, fc_id: str, *, field_id: str,
+        required: bool = False, hidden: bool = False, description: str = "",
+    ) -> None:
+        await self.client.put_json(
+            f"{self.api_root}/fieldconfiguration/{fc_id}/fields",
+            json={"fieldConfigurationItems": [{
+                "id": field_id,
+                "isRequired": required,
+                "isHidden": hidden,
+                "description": description,
+            }]},
+        )
+
+    # ── Field configuration schemes ──────────────────────────────────
+    async def create_field_configuration_scheme(
+        self, *, name: str, description: str = "",
+    ) -> str:
+        body: dict[str, Any] = {"name": name, "description": description}
+        result = await self.client.post_json(
+            f"{self.api_root}/fieldconfigurationscheme", json=body,
+        )
+        return _expect_id(result, f"POST {self.api_root}/fieldconfigurationscheme")
+
+    async def delete_field_configuration_scheme(self, scheme_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/fieldconfigurationscheme/{scheme_id}")
+
+    async def update_field_configuration_scheme(
+        self, scheme_id: str, *,
+        name: str | None = None, description: str | None = None,
+    ) -> None:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if not body:
+            return
+        await self.client.put_json(
+            f"{self.api_root}/fieldconfigurationscheme/{scheme_id}", json=body,
+        )
+
+    async def set_field_configuration_scheme_mappings(
+        self, scheme_id: str, *, mappings: list[dict[str, str]],
+    ) -> None:
+        """mappings: [{"issueTypeId": "...", "fieldConfigurationId": "..."}, ...].
+
+        At least one entry must have issueTypeId == "default".
+        """
+        await self.client.put_json(
+            f"{self.api_root}/fieldconfigurationscheme/{scheme_id}/mapping",
+            json={"mappings": mappings},
+        )
+
+    async def set_project_field_configuration_scheme(
+        self, *, project_id: str, scheme_id: str,
+    ) -> None:
+        await self.client.put_json(
+            f"{self.api_root}/fieldconfigurationscheme/project",
+            json={"fieldConfigurationSchemeId": scheme_id, "projectId": project_id},
+        )
+
+    # ── Issue types ──────────────────────────────────────────────────
+    async def create_issuetype(
+        self, *, name: str, description: str = "", subtask: bool = False,
+    ) -> str:
+        body: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "type": "subtask" if subtask else "standard",
+        }
+        result = await self.client.post_json(f"{self.api_root}/issuetype", json=body)
+        return _expect_id(result, f"POST {self.api_root}/issuetype")
+
+    async def delete_issuetype(self, issuetype_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/issuetype/{issuetype_id}")
+
+    async def update_issuetype(
+        self, issuetype_id: str, *,
+        name: str | None = None, description: str | None = None,
+    ) -> None:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if not body:
+            return
+        await self.client.put_json(
+            f"{self.api_root}/issuetype/{issuetype_id}", json=body,
+        )
+
+    # ── Projects ─────────────────────────────────────────────────────
+    async def create_project(
+        self,
+        *,
+        key: str,
+        name: str,
+        project_type_key: str,
+        lead: str,
+        description: str = "",
+        project_template_key: str | None = None,
+    ) -> str:
+        """DC takes a username as ``lead``. Cloud overrides to send ``leadAccountId``."""
+        body: dict[str, Any] = {
+            "key": key,
+            "name": name,
+            "projectTypeKey": project_type_key,
+            "lead": lead,
+            "description": description,
+        }
+        if project_template_key:
+            body["projectTemplateKey"] = project_template_key
+        result = await self.client.post_json(f"{self.api_root}/project", json=body)
+        return _expect_id(result, f"POST {self.api_root}/project")
+
+    async def delete_project(self, *, project_id: str, project_key: str) -> None:
+        """DC accepts either id or key; Cloud requires id. Both passed."""
+        await self.client.delete(f"{self.api_root}/project/{project_key}")
+
+    async def update_project(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        lead: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        """DC accepts lead as username. Cloud overrides to send leadAccountId."""
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if lead is not None:
+            body["lead"] = lead
+        if description is not None:
+            body["description"] = description
+        if not body:
+            return
+        await self.client.put_json(
+            f"{self.api_root}/project/{project_id}", json=body,
+        )
+
+
+    # ── Search (M5 data plane) ───────────────────────────────────────
+    async def search(
+        self, *, jql: str, fields: list[str], page_size: int = 50,
+    ):
+        """Yield issue payloads matching `jql`. DC: legacy GET /search.
+
+        Returns an async iterator of raw issue dicts. Caller (the session)
+        hydrates them into model instances.
+        """
+        start = 0
+        while True:
+            params: dict[str, Any] = {
+                "jql": jql,
+                "fields": ",".join(fields) if fields else "*all",
+                "startAt": start,
+                "maxResults": page_size,
+            }
+            body = await self.client.get_json(
+                f"{self.api_root}/search", params=params,
+            )
+            issues = body.get("issues", []) if isinstance(body, dict) else []
+            for issue in issues:
+                yield issue
+            if not issues:
+                return
+            total = body.get("total", 0)
+            start += len(issues)
+            if start >= total:
+                return
+
+    async def get_issue(self, key: str, *, fields: list[str]) -> dict:
+        """Fetch one issue by key. Used by session.get(Model, key)."""
+        params = {"fields": ",".join(fields) if fields else "*all"}
+        return await self.client.get_json(
+            f"{self.api_root}/issue/{key}", params=params,
+        )
+
+    # ── Issue writes (M6 data plane) ─────────────────────────────────
+    async def create_issue(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST /issue with ``{"fields": ...}``. Returns ``{"id":..., "key":..., "self":...}``."""
+        return await self.client.post_json(f"{self.api_root}/issue", json=body)
+
+    async def update_issue(self, key: str, body: dict[str, Any]) -> None:
+        """PUT /issue/{key}. Body is ``{"fields": ...}`` with dirty fields only."""
+        await self.client.put_json(f"{self.api_root}/issue/{key}", json=body)
+
+    async def delete_issue(self, key: str) -> None:
+        await self.client.delete(f"{self.api_root}/issue/{key}")
+
+
+def _expect_id(result: Any, where: str) -> str:
+    if not isinstance(result, dict) or "id" not in result:
+        raise ReflectionError(f"{where} returned no id: {result!r}")
+    return str(result["id"])

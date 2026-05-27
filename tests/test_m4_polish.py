@@ -1,0 +1,439 @@
+"""M4 polish: idempotency, advisory lock, retry/backoff, diff gaps, env config."""
+
+import asyncio
+import os
+import sys
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+
+import httpx
+import pytest
+import respx
+
+from pensum import (
+    PATAuth,
+    StateFile,
+    create_engine,
+    op,
+)
+from pensum.engine import Engine
+from pensum.migrations.context import MigrationContext, reset_context, set_context
+from pensum.registry import registry
+from pensum.state.file import (
+    CustomFieldMapping,
+    ProjectMapping,
+    ScreenMapping,
+    SimpleMapping,
+)
+from pensum.state.lock import StateLock, StateLockError
+
+BASE = "https://jira.example.com"
+DC_ROOT = f"{BASE}/rest/api/2"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_registry():
+    registry.reset()
+    sys.modules.pop("examples.platform", None)
+    yield
+    registry.reset()
+    sys.modules.pop("examples.platform", None)
+
+
+def _engine() -> Engine:
+    return create_engine(f"jira_dc+{BASE}", auth=PATAuth("tok"))
+
+
+async def _in_ctx(
+    engine: Engine, state: StateFile, body: Callable[[], Awaitable[None]],
+) -> None:
+    ctx = MigrationContext(engine=engine, state=state, direction="upgrade")
+    token = set_context(ctx)
+    try:
+        await body()
+    finally:
+        reset_context(token)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Idempotency: re-running a create op with alias in state is a no-op
+# ──────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_custom_field_idempotent_returns_existing_id():
+    """Alias in state → returns existing id, makes no HTTP call."""
+    from pensum.fields import TextField
+    state = StateFile(env="dev", jira_url=BASE)
+    state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_10042")
+    engine = _engine()
+    captured: list[str] = []
+
+    async def call():
+        captured.append(await op.create_custom_field(
+            alias="bug_severity", name="Severity", type=TextField,
+        ))
+
+    try:
+        await _in_ctx(engine, state, call)
+    finally:
+        await engine.close()
+    assert captured == ["customfield_10042"]
+    # No POST /field was issued — respx has zero recorded calls.
+    assert respx.calls.call_count == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_custom_field_idempotent_adds_missing_options():
+    """When the field exists but the schema declares new options, the missing
+    ones are added (existing ones skipped)."""
+    from pensum.fields import SelectField
+    respx.post(
+        f"{DC_ROOT}/field/customfield_10042/option", json__eq={"value": "S5"},
+    ).mock(return_value=httpx.Response(201, json={"id": "200"}))
+
+    state = StateFile(env="dev", jira_url=BASE)
+    state.custom_fields["bug_severity"] = CustomFieldMapping(
+        id="customfield_10042", options={"S1": "100"},
+    )
+    engine = _engine()
+    try:
+        await _in_ctx(engine, state, lambda: op.create_custom_field(
+            alias="bug_severity", name="Severity", type=SelectField,
+            options=["S1", "S5"],
+        ))
+    finally:
+        await engine.close()
+    assert state.custom_fields["bug_severity"].options == {"S1": "100", "S5": "200"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_screen_idempotent():
+    state = StateFile(env="dev", jira_url=BASE)
+    state.screens["bug_screen"] = ScreenMapping(id="scr-1")
+    engine = _engine()
+    captured: list[str] = []
+
+    async def call():
+        captured.append(await op.create_screen(
+            alias="bug_screen", name="Bug Screen",
+        ))
+
+    try:
+        await _in_ctx(engine, state, call)
+    finally:
+        await engine.close()
+    assert captured == ["scr-1"]
+    assert respx.calls.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_op_idempotent_when_alias_absent():
+    """Deleting a non-existent alias is a no-op (no Jira call, no error)."""
+    state = StateFile(env="dev", jira_url=BASE)
+    engine = _engine()
+    try:
+        # All seven delete ops should silently no-op:
+        await _in_ctx(engine, state, lambda: op.delete_custom_field(alias="ghost"))
+        await _in_ctx(engine, state, lambda: op.delete_screen(alias="ghost"))
+        await _in_ctx(engine, state, lambda: op.delete_screen_scheme(alias="ghost"))
+        await _in_ctx(engine, state, lambda: op.delete_issuetype_screen_scheme(alias="ghost"))
+        await _in_ctx(engine, state, lambda: op.delete_field_configuration(alias="ghost"))
+        await _in_ctx(engine, state, lambda: op.delete_field_configuration_scheme(alias="ghost"))
+        await _in_ctx(engine, state, lambda: op.delete_issuetype(alias="ghost"))
+        await _in_ctx(engine, state, lambda: op.delete_project(alias="ghost", key="GHOST"))
+    finally:
+        await engine.close()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Advisory lock
+# ──────────────────────────────────────────────────────────────────────
+def test_state_lock_acquires_and_releases(tmp_path):
+    state_path = tmp_path / "state.yaml"
+    lock = StateLock(state_path)
+    lock_file = tmp_path / "state.yaml.lock"
+    assert not lock_file.exists()
+    lock.acquire()
+    assert lock_file.exists()
+    body = lock_file.read_text()
+    assert f"pid={os.getpid()}" in body
+    lock.release()
+    assert not lock_file.exists()
+
+
+def test_state_lock_refuses_when_already_held(tmp_path):
+    state_path = tmp_path / "state.yaml"
+    held = StateLock(state_path)
+    held.acquire()
+    try:
+        second = StateLock(state_path)
+        with pytest.raises(StateLockError) as e:
+            second.acquire()
+        assert f"pid={os.getpid()}" in str(e.value)
+    finally:
+        held.release()
+
+
+def test_state_lock_context_manager_releases_on_exception(tmp_path):
+    state_path = tmp_path / "state.yaml"
+    lock_file = tmp_path / "state.yaml.lock"
+    with pytest.raises(RuntimeError):
+        with StateLock(state_path):
+            assert lock_file.exists()
+            raise RuntimeError("boom")
+    assert not lock_file.exists()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# HTTP retry/backoff
+# ──────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_retry_on_429_then_success():
+    """First response 429, second 200 — request succeeds after one retry."""
+    respx.get(f"{DC_ROOT}/serverInfo").mock(side_effect=[
+        httpx.Response(429, headers={"Retry-After": "0"}),
+        httpx.Response(200, json={
+            "baseUrl": BASE, "version": "9", "deploymentType": "Server",
+        }),
+    ])
+    engine = _engine()
+    try:
+        info = await engine.detect()
+    finally:
+        await engine.close()
+    assert info is True
+    assert respx.calls.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_retry_on_503_then_success():
+    respx.get(f"{DC_ROOT}/serverInfo").mock(side_effect=[
+        httpx.Response(503, headers={"Retry-After": "0"}),
+        httpx.Response(503, headers={"Retry-After": "0"}),
+        httpx.Response(200, json={
+            "baseUrl": BASE, "version": "9", "deploymentType": "Server",
+        }),
+    ])
+    engine = _engine()
+    try:
+        await engine.detect()
+    finally:
+        await engine.close()
+    assert respx.calls.call_count == 3
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_retry_gives_up_after_max_retries():
+    """4 consecutive 429s (default max_retries=3) → TransportError."""
+    from pensum.exceptions import TransportError
+
+    respx.get(f"{DC_ROOT}/serverInfo").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "0"}),
+    )
+    engine = _engine()
+    try:
+        with pytest.raises(TransportError):
+            await engine.detect()
+    finally:
+        await engine.close()
+    # Original + 3 retries = 4 calls.
+    assert respx.calls.call_count == 4
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_no_retry_on_non_retryable_status():
+    """4xx other than 429 propagates immediately (no retry)."""
+    from pensum.exceptions import NotFoundError
+
+    respx.get(f"{DC_ROOT}/serverInfo").mock(
+        return_value=httpx.Response(404),
+    )
+    engine = _engine()
+    try:
+        with pytest.raises(NotFoundError):
+            await engine.detect()
+    finally:
+        await engine.close()
+    assert respx.calls.call_count == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Diff: project rename
+# ──────────────────────────────────────────────────────────────────────
+def test_diff_emits_update_project_on_rename():
+    from pensum.autogen.desired import build_desired_snapshot
+    from pensum.autogen.diff import UpdateProject, diff
+    from pensum.state.snapshot import (
+        ProjectSnapshot,
+        ServerInfoSnapshot,
+        Snapshot,
+    )
+    import examples.platform  # noqa: F401  -- imports trigger registration
+
+    desired = build_desired_snapshot()
+    state = StateFile(env="dev", jira_url=BASE)
+    state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
+
+    snapshot = Snapshot(server_info=ServerInfoSnapshot(
+        deployment_type="Server", version="9", base_url="x",
+    ))
+    snapshot.projects["PLAT"] = ProjectSnapshot(
+        id="p-1", key="PLAT", name="Platform (Old Name)",
+    )
+    result = diff(
+        desired=desired, snapshot=snapshot, state=state, allow_delete=False,
+    )
+    updates = [c for c in result.changes if isinstance(c, UpdateProject)]
+    assert len(updates) == 1
+    assert updates[0].alias == "PLAT"
+    assert updates[0].name == "Platform"   # __title__ defaults to class name
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Diff: ITSS mapping rebind
+# ──────────────────────────────────────────────────────────────────────
+def test_diff_emits_update_itss_when_mappings_change():
+    """Existing ITSS in state has mapping default→ss-A, but schema wants
+    default→ss-B (synthesized). Diff emits UpdateIssueTypeScreenScheme
+    with new mappings."""
+    from pensum.autogen.desired import (
+        DesiredIssueType,
+        DesiredIssueTypeScreenScheme,
+        DesiredScreenScheme,
+        DesiredSnapshot,
+    )
+    from pensum.autogen.diff import UpdateIssueTypeScreenScheme, diff
+    from pensum.state.snapshot import (
+        IssueTypeScreenSchemeMappingSnapshot,
+        IssueTypeScreenSchemeSnapshot,
+        ServerInfoSnapshot,
+        Snapshot,
+    )
+
+    desired = DesiredSnapshot()
+    desired.screen_schemes["ss_b"] = DesiredScreenScheme(
+        alias="ss_b", name="SS B", description="",
+        screens={"default": "anywhere"},
+    )
+    desired.issuetype_screen_schemes["plat_itss"] = DesiredIssueTypeScreenScheme(
+        alias="plat_itss", name="PLAT ITSS", description="",
+        mappings={"default": "ss_b"},
+    )
+
+    state = StateFile(env="dev", jira_url=BASE)
+    state.screen_schemes["ss_a"] = SimpleMapping(id="ss-old")
+    state.screen_schemes["ss_b"] = SimpleMapping(id="ss-new")
+    state.issuetype_screen_schemes["plat_itss"] = SimpleMapping(id="itss-1")
+
+    snap = Snapshot(server_info=ServerInfoSnapshot(
+        deployment_type="Server", version="9", base_url="x",
+    ))
+    snap.issuetype_screen_schemes["itss-1"] = IssueTypeScreenSchemeSnapshot(
+        id="itss-1", name="PLAT ITSS",
+        mappings=(IssueTypeScreenSchemeMappingSnapshot(
+            issuetype_id="default", screen_scheme_id="ss-old",
+        ),),
+    )
+    result = diff(desired=desired, snapshot=snap, state=state, allow_delete=False)
+    updates = [c for c in result.changes if isinstance(c, UpdateIssueTypeScreenScheme)]
+    assert len(updates) == 1
+    assert updates[0].mappings == {"default": "ss_b"}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Env config loader
+# ──────────────────────────────────────────────────────────────────────
+def test_env_config_fills_in_missing_flags(tmp_path, monkeypatch):
+    """When ~/.pensum/envs/prod.yaml exists, --env prod fills in url/auth."""
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "prod.yaml").write_text(
+        "url: https://jira.example.com\n"
+        "auth: pat\n"
+        "dialect: jira_dc\n"
+    )
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+
+    import argparse
+
+    from pensum.cli.env_config import apply_env_defaults
+
+    args = argparse.Namespace(env="prod", url=None, auth=None, dialect=None,
+                              token_env="PENSUM_TOKEN", user_env="PENSUM_USER",
+                              no_verify_ssl=False)
+    apply_env_defaults(args, args.env)
+    assert args.url == "https://jira.example.com"
+    assert args.auth == "pat"
+    assert args.dialect == "jira_dc"
+
+
+def test_env_config_explicit_flags_override(tmp_path, monkeypatch):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "prod.yaml").write_text("url: https://from-config\n")
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+
+    import argparse
+
+    from pensum.cli.env_config import apply_env_defaults
+
+    args = argparse.Namespace(env="prod", url="https://from-cli", auth="pat",
+                              dialect=None, token_env="PENSUM_TOKEN",
+                              user_env="PENSUM_USER", no_verify_ssl=False)
+    apply_env_defaults(args, args.env)
+    assert args.url == "https://from-cli"   # CLI wins
+
+
+def test_env_config_missing_file_is_silent(tmp_path, monkeypatch):
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path))
+    import argparse
+
+    from pensum.cli.env_config import apply_env_defaults
+
+    args = argparse.Namespace(env="prod", url="x", auth="pat", dialect=None,
+                              token_env="PENSUM_TOKEN", user_env="PENSUM_USER",
+                              no_verify_ssl=False)
+    apply_env_defaults(args, "prod")   # config does not exist → no-op
+    assert args.url == "x"
+
+
+def test_env_config_rejects_unknown_keys(tmp_path, monkeypatch):
+    from pensum.exceptions import ConfigurationError
+
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    (cfg_dir / "prod.yaml").write_text("url: x\nnonsense: 1\n")
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(cfg_dir))
+
+    from pensum.cli.env_config import load_env_config
+
+    with pytest.raises(ConfigurationError) as e:
+        load_env_config("prod")
+    assert "nonsense" in str(e.value)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CLI: upgrade reports missing connection cleanly
+# ──────────────────────────────────────────────────────────────────────
+def test_cli_upgrade_errors_when_url_and_auth_missing(tmp_path, monkeypatch):
+    """No env config, no --url, no --auth → clean SystemExit with the offending keys."""
+    from pensum.cli.main import main
+
+    monkeypatch.setenv("PENSUM_CONFIG_DIR", str(tmp_path / "nonexistent"))
+    mig_dir = tmp_path / "migrations"
+    state_path = tmp_path / "state.yaml"
+    with pytest.raises(SystemExit) as e:
+        main([
+            "upgrade",
+            "--migrations-dir", str(mig_dir),
+            "--state", str(state_path),
+            "--env", "dev",
+        ])
+    assert "url" in str(e.value)
+    assert "auth" in str(e.value)

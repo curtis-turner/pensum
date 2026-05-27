@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pensum"
+version = "0.1.0a0"
+description = "Declarative schema-as-code and ORM for work-management systems. Jira first, dialect protocol for the rest."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Curtis Turner" }]
+keywords = [
+  "jira",
+  "orm",
+  "migrations",
+  "alembic",
+  "schema-as-code",
+  "atlassian",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Database",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+  "httpx>=0.25",
+  "pyyaml>=6.0",
+  "pydantic[email]",
+  "cyclopts>=3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/curtis-turner/pensum"
+Source = "https://github.com/curtis-turner/pensum"
+Issues = "https://github.com/curtis-turner/pensum/issues"
+Changelog = "https://github.com/curtis-turner/pensum/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+jira = ["jira>=3.8"]
+dev = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21",
+  "pytest-cov>=4.0",
+  "respx>=0.20",
+  "ruff>=0.1",
+  "mypy>=1.0",
+  "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+pensum = "pensum.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pensum*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+  "pytest>=9.0.3",
+  "pytest-asyncio>=0.21",
+  "pytest-cov>=4.0",
+  "respx>=0.20",
+  "ruff>=0.15.14",
+  "mypy>=1.0",
+  "types-PyYAML>=6.0",
+]

@@ -1,0 +1,44 @@
+# Changelog
+
+All notable changes to pensum are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version
+numbers follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- Sync `Session` facade over `AsyncSession` for callers who do not want to
+  manage an event loop.
+- `pensum validate` CLI subcommand for schema-level checks with no network
+  calls.
+
+### Changed
+- CLI ported from `argparse` to [Cyclopts](https://cyclopts.readthedocs.io)
+  for type-hint-driven parsing and Rich-rendered help. Subcommand names,
+  flag names, and exit codes are unchanged. `--merge a b c` still accepts
+  space-separated revisions.
+
+## [0.1.0a0]
+
+Initial alpha. The schema plane and the data plane are both shippable
+end-to-end against Jira Data Center and Jira Cloud.
+
+### Added
+- Declarative schema classes: `IssueType`, `Project`, `CustomField`, `Screen`,
+  `ScreenScheme`, `FieldConfiguration`.
+- Jira DC and Jira Cloud dialects sharing a common base.
+- Reflection of all in-scope admin objects into a `Snapshot`.
+- Migration package: `Migration`, `RevisionGraph`, op API (30 functions),
+  runner with mid-op state persistence, `op.unsupported` escape hatch,
+  multi-parent merges.
+- `pensum revision --autogenerate` for diffing schema against a live env.
+- `pensum stamp` for brownfield adoption.
+- HTTP retry with `Retry-After` honoring, advisory lock on state file,
+  env config loader.
+- Async data plane: `AsyncSession` with identity map, dirty tracking,
+  `select(...).where(...)` compiling to JQL, `session.add/delete/commit`.
+- TMP awareness: project style tracked in state, CMP-only ops raise
+  `UnsupportedTMPOpError` with a deep link to the Jira UI.
+
+[Unreleased]: https://github.com/curtis-turner/pensum/compare/v0.1.0a0...HEAD
+[0.1.0a0]: https://github.com/curtis-turner/pensum/releases/tag/v0.1.0a0
