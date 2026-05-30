@@ -683,15 +683,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "respx" },
-    { name = "ruff" },
-    { name = "types-pyyaml" },
-]
 jira = [
     { name = "jira" },
 ]
@@ -712,19 +703,12 @@ requires-dist = [
     { name = "cyclopts", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.25" },
     { name = "jira", marker = "extra == 'jira'", specifier = ">=3.8" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic", extras = ["email"] },
     { name = "pydantic-settings", specifier = ">=2.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "respx", marker = "extra == 'dev'", specifier = ">=0.20" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1" },
-    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
-provides-extras = ["jira", "dev"]
+provides-extras = ["jira"]
 
 [package.metadata.requires-dev]
 dev = [

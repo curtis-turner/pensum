@@ -48,21 +48,15 @@ Changelog = "https://github.com/curtis-turner/pensum/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 jira = ["jira>=3.8"]
-dev = [
-  "pytest>=7.0",
-  "pytest-asyncio>=0.21",
-  "pytest-cov>=4.0",
-  "respx>=0.20",
-  "ruff>=0.1",
-  "mypy>=1.0",
-  "types-PyYAML>=6.0",
-]
 
 [project.scripts]
 pensum = "pensum.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["pensum*"]
+
+[tool.setuptools.package-data]
+pensum = ["py.typed"]
 
 [tool.ruff]
 line-length = 120
