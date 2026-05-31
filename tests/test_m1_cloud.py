@@ -39,6 +39,8 @@ def _stub_empty(mock: respx.MockRouter) -> None:
     mock.get(f"{CLOUD_ROOT}/project/search").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{CLOUD_ROOT}/screens").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{CLOUD_ROOT}/screenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{CLOUD_ROOT}/issuetypescheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{CLOUD_ROOT}/issuetypescheme/mapping").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{CLOUD_ROOT}/issuetypescreenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{CLOUD_ROOT}/fieldconfiguration").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{CLOUD_ROOT}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))

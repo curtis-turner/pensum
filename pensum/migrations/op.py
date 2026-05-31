@@ -696,6 +696,108 @@ async def set_project_field_configuration_scheme(
     )
 
 
+# ── Issue type schemes ───────────────────────────────────────────────
+async def create_issuetype_scheme(
+    *,
+    alias: str,
+    name: str,
+    issuetypes: list[str],
+    default_issuetype: str,
+    description: str = "",
+) -> str:
+    """``issuetypes`` is a list of issuetype aliases. ``default_issuetype`` is
+    the alias used as the scheme's default; it must be in ``issuetypes``.
+    Jira additionally requires at least one *standard* (non-subtask) issuetype
+    in the list — the dialect surfaces that as a 400 if violated.
+    """
+    ctx = get_context()
+    _require_alias(alias, "create_issuetype_scheme")
+    existing = _existing_id_or_none(ctx.state.issuetype_schemes, alias)
+    if existing is not None:
+        return existing
+    if not issuetypes:
+        raise ConfigurationError("create_issuetype_scheme: `issuetypes` must be non-empty")
+    if default_issuetype not in issuetypes:
+        raise ConfigurationError(
+            f"create_issuetype_scheme: default_issuetype {default_issuetype!r} must be one of {list(issuetypes)}"
+        )
+    issuetype_ids: list[str] = []
+    for it_alias in issuetypes:
+        m = _require_existing("create_issuetype_scheme", it_alias, ctx.state.issuetypes)
+        issuetype_ids.append(m.id)
+    default_id = ctx.state.issuetypes[default_issuetype].id
+    scheme_id = await ctx.engine.dialect.create_issuetype_scheme(
+        name=name,
+        description=description,
+        issuetype_ids=issuetype_ids,
+        default_issuetype_id=default_id,
+    )
+    ctx.state.issuetype_schemes[alias] = SimpleMapping(id=scheme_id)
+    return scheme_id
+
+
+async def update_issuetype_scheme(
+    *,
+    alias: str,
+    name: str | None = None,
+    description: str | None = None,
+    default_issuetype: str | None = None,
+) -> None:
+    ctx = get_context()
+    mapping = _require_existing("update_issuetype_scheme", alias, ctx.state.issuetype_schemes)
+    default_id: str | None = None
+    if default_issuetype is not None:
+        default_id = _require_existing(
+            "update_issuetype_scheme",
+            default_issuetype,
+            ctx.state.issuetypes,
+        ).id
+    await ctx.engine.dialect.update_issuetype_scheme(
+        mapping.id,
+        name=name,
+        description=description,
+        default_issuetype_id=default_id,
+    )
+
+
+async def delete_issuetype_scheme(*, alias: str) -> None:
+    """Idempotent: no-op when alias is absent from state."""
+    ctx = get_context()
+    mapping = ctx.state.issuetype_schemes.get(alias)
+    if mapping is None:
+        return
+    await ctx.engine.dialect.delete_issuetype_scheme(mapping.id)
+    del ctx.state.issuetype_schemes[alias]
+
+
+async def set_project_issuetype_scheme(
+    *,
+    project_alias: str,
+    scheme_alias: str,
+) -> None:
+    ctx = get_context()
+    project = _require_existing(
+        "set_project_issuetype_scheme",
+        project_alias,
+        ctx.state.projects,
+    )
+    _refuse_tmp(
+        project,
+        project_alias,
+        "set_project_issuetype_scheme",
+        ctx.state.jira_url,
+    )
+    scheme = _require_existing(
+        "set_project_issuetype_scheme",
+        scheme_alias,
+        ctx.state.issuetype_schemes,
+    )
+    await ctx.engine.dialect.set_project_issuetype_scheme(
+        project_id=project.id,
+        scheme_id=scheme.id,
+    )
+
+
 # ── Escape hatch ─────────────────────────────────────────────────────
 def unsupported(reason: str) -> None:
     """Signal that the surrounding migration cannot run safely.

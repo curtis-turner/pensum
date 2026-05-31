@@ -9,16 +9,12 @@ from pensum.autogen.desired import build_desired_snapshot
 from pensum.autogen.diff import (
     AddCustomFieldOption,
     CreateCustomField,
-    CreateFieldConfiguration,
-    CreateIssueType,
     CreateIssueTypeScreenScheme,
     CreateProject,
     CreateScreen,
     CreateScreenScheme,
     DeleteCustomField,
     RemoveCustomFieldOption,
-    SetFieldConfigurationItem,
-    SetProjectFieldConfigurationScheme,
     SetProjectIssueTypeScreenScheme,
     UpdateCustomField,
     diff,
@@ -28,15 +24,9 @@ from pensum.fields import SelectField, TextField
 from pensum.registry import registry
 from pensum.state.file import (
     CustomFieldMapping,
-    ScreenMapping,
-    SimpleMapping,
 )
 from pensum.state.snapshot import (
     CustomFieldSnapshot,
-    IssueTypeSnapshot,
-    ProjectSnapshot,
-    ScreenSnapshot,
-    ScreenSchemeSnapshot,
     ServerInfoSnapshot,
     Snapshot,
 )
@@ -65,6 +55,7 @@ def test_desired_snapshot_derives_itss_and_fcs_per_project():
     """Importing the example schema produces a desired snapshot with a
     synthesized ITSS named `{key}_itss` and FCS named `{key}_fcs`."""
     import examples.platform  # noqa: F401  -- import-for-side-effects
+
     desired = build_desired_snapshot()
     assert "bug_severity" in desired.custom_fields
     assert "bug" in desired.issuetypes
@@ -79,8 +70,24 @@ def test_desired_snapshot_derives_itss_and_fcs_per_project():
     assert fcs.mappings["default"] == "bug_fields"
 
 
+def test_desired_snapshot_derives_issuetype_scheme_per_project():
+    """A project's __issuetypes__ feeds a per-project IssueTypeScheme.
+    Default issuetype = first standard (non-subtask). Project records the
+    binding via DesiredProject.issuetype_scheme."""
+    import examples.platform  # noqa: F401
+
+    desired = build_desired_snapshot()
+    assert "PLAT_its" in desired.issuetype_schemes
+    its = desired.issuetype_schemes["PLAT_its"]
+    assert its.name == "PLAT Issue Type Scheme"
+    assert its.issuetypes == ("bug",)
+    assert its.default_issuetype == "bug"
+    assert desired.projects["PLAT"].issuetype_scheme == "PLAT_its"
+
+
 def test_desired_screen_carries_one_tab_with_field_refs():
     import examples.platform  # noqa: F401
+
     desired = build_desired_snapshot()
     edit = desired.screens["bug_edit"]
     assert len(edit.tabs) == 1
@@ -95,10 +102,13 @@ def test_desired_screen_carries_one_tab_with_field_refs():
 def test_diff_greenfield_emits_create_for_every_declared_object():
     """State empty, Jira empty, schema has everything → all creates."""
     import examples.platform  # noqa: F401
+
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")
     result = diff(
-        desired=desired, snapshot=_empty_snapshot(), state=state,
+        desired=desired,
+        snapshot=_empty_snapshot(),
+        state=state,
         allow_delete=False,
     )
     kinds = {type(c).__name__ for c in result.changes}
@@ -108,19 +118,24 @@ def test_diff_greenfield_emits_create_for_every_declared_object():
     assert "CreateFieldConfiguration" in kinds
     assert "CreateScreen" in kinds
     assert "CreateScreenScheme" in kinds
+    assert "CreateIssueTypeScheme" in kinds
     assert "CreateIssueTypeScreenScheme" in kinds
     assert "CreateFieldConfigurationScheme" in kinds
     assert "CreateProject" in kinds
+    assert "SetProjectIssueTypeScheme" in kinds
     assert "SetProjectIssueTypeScreenScheme" in kinds
     assert "SetProjectFieldConfigurationScheme" in kinds
 
 
 def test_diff_greenfield_emits_no_deletes():
     import examples.platform  # noqa: F401
+
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")
     result = diff(
-        desired=desired, snapshot=_empty_snapshot(), state=state,
+        desired=desired,
+        snapshot=_empty_snapshot(),
+        state=state,
         allow_delete=True,
     )
     assert not any("Delete" in type(c).__name__ for c in result.changes)
@@ -133,7 +148,9 @@ def test_diff_in_sync_is_empty():
     desired = build_desired_snapshot()  # empty registry
     state = StateFile(env="dev", jira_url="x")
     result = diff(
-        desired=desired, snapshot=_empty_snapshot(), state=state,
+        desired=desired,
+        snapshot=_empty_snapshot(),
+        state=state,
         allow_delete=False,
     )
     assert result.changes == []
@@ -147,7 +164,9 @@ def test_diff_state_only_without_allow_delete_warns():
     state = StateFile(env="dev", jira_url="x")
     state.custom_fields["orphan"] = CustomFieldMapping(id="customfield_99999")
     result = diff(
-        desired=desired, snapshot=_empty_snapshot(), state=state,
+        desired=desired,
+        snapshot=_empty_snapshot(),
+        state=state,
         allow_delete=False,
     )
     assert not any(isinstance(c, DeleteCustomField) for c in result.changes)
@@ -159,11 +178,12 @@ def test_diff_state_only_with_allow_delete_emits_delete():
     state = StateFile(env="dev", jira_url="x")
     state.custom_fields["orphan"] = CustomFieldMapping(id="customfield_99999")
     result = diff(
-        desired=desired, snapshot=_empty_snapshot(), state=state,
+        desired=desired,
+        snapshot=_empty_snapshot(),
+        state=state,
         allow_delete=True,
     )
-    assert any(isinstance(c, DeleteCustomField) and c.alias == "orphan"
-               for c in result.changes)
+    assert any(isinstance(c, DeleteCustomField) and c.alias == "orphan" for c in result.changes)
 
 
 # ── Diff: option changes on existing custom field ────────────────────
@@ -173,18 +193,22 @@ def test_diff_option_added_emits_add_custom_field_option():
     from pensum.fields import CustomField
 
     CustomField(
-        alias="bug_severity", name="Severity", type=SelectField,
+        alias="bug_severity",
+        name="Severity",
+        type=SelectField,
         options=["S1", "S2", "S3"],
     )
     desired = build_desired_snapshot()
 
     state = StateFile(env="dev", jira_url="x")
     state.custom_fields["bug_severity"] = CustomFieldMapping(
-        id="customfield_10042", options={"S1": "100", "S2": "101"},
+        id="customfield_10042",
+        options={"S1": "100", "S2": "101"},
     )
     snap = _empty_snapshot()
     snap.custom_fields["customfield_10042"] = CustomFieldSnapshot(
-        id="customfield_10042", name="Severity",
+        id="customfield_10042",
+        name="Severity",
         type_id=SelectField.jira_type_id,
         options={"S1": "100", "S2": "101"},
     )
@@ -200,16 +224,21 @@ def test_diff_option_removed_requires_allow_delete():
     from pensum.fields import CustomField
 
     CustomField(
-        alias="bug_severity", name="Severity", type=SelectField, options=["S1"],
+        alias="bug_severity",
+        name="Severity",
+        type=SelectField,
+        options=["S1"],
     )
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")
     state.custom_fields["bug_severity"] = CustomFieldMapping(
-        id="customfield_10042", options={"S1": "100", "S2": "101"},
+        id="customfield_10042",
+        options={"S1": "100", "S2": "101"},
     )
     snap = _empty_snapshot()
     snap.custom_fields["customfield_10042"] = CustomFieldSnapshot(
-        id="customfield_10042", name="Severity",
+        id="customfield_10042",
+        name="Severity",
         type_id=SelectField.jira_type_id,
         options={"S1": "100", "S2": "101"},
     )
@@ -236,7 +265,8 @@ def test_diff_emits_update_for_renamed_custom_field():
     )
     snap = _empty_snapshot()
     snap.custom_fields["customfield_10042"] = CustomFieldSnapshot(
-        id="customfield_10042", name="Severity",
+        id="customfield_10042",
+        name="Severity",
         type_id=TextField.jira_type_id,
     )
     result = diff(desired=desired, snapshot=snap, state=state, allow_delete=False)
@@ -257,7 +287,10 @@ def test_diff_warns_on_state_id_missing_from_jira():
     state = StateFile(env="dev", jira_url="x")
     state.custom_fields["bug_severity"] = CustomFieldMapping(id="customfield_99999")
     result = diff(
-        desired=desired, snapshot=_empty_snapshot(), state=state, allow_delete=False,
+        desired=desired,
+        snapshot=_empty_snapshot(),
+        state=state,
+        allow_delete=False,
     )
     assert any("not present in Jira" in w for w in result.warnings)
 
@@ -269,19 +302,32 @@ def test_sort_orders_phases_correctly():
     changes = [
         SetProjectIssueTypeScreenScheme(project_alias="p", scheme_alias="i"),
         CreateProject(
-            alias="p", key="P", name="P", project_type_key="software",
-            lead="x", description="",
+            alias="p",
+            key="P",
+            name="P",
+            project_type_key="software",
+            lead="x",
+            description="",
         ),
         CreateCustomField(
-            alias="cf", name="CF", type_id=TextField.jira_type_id,
-            description="", options=(),
+            alias="cf",
+            name="CF",
+            type_id=TextField.jira_type_id,
+            description="",
+            options=(),
         ),
         CreateScreen(alias="s", name="S", description=""),
         CreateScreenScheme(
-            alias="ss", name="SS", description="", screens={"default": "s"},
+            alias="ss",
+            name="SS",
+            description="",
+            screens={"default": "s"},
         ),
         CreateIssueTypeScreenScheme(
-            alias="itss", name="ITSS", description="", mappings={"default": "ss"},
+            alias="itss",
+            name="ITSS",
+            description="",
+            mappings={"default": "ss"},
         ),
     ]
     sorted_changes = sort_changes(changes)
@@ -302,20 +348,24 @@ def test_emit_generated_file_loads_via_migration_loader(tmp_path):
     """The full pipeline produces a file the migration loader accepts."""
     changes = [
         CreateCustomField(
-            alias="bug_severity", name="Severity",
+            alias="bug_severity",
+            name="Severity",
             type_id=SelectField.jira_type_id,
             description="bug severity",
             options=("S1", "S2", "S3", "S4"),
         ),
     ]
     source = render_autogenerated(
-        "create severity", parents=None, revision="abcdef012345",
+        "create severity",
+        parents=None,
+        revision="abcdef012345",
         changes=changes,
     )
     p = tmp_path / "2026_05_20_1200_create_severity.py"
     p.write_text(source)
 
     from pensum import load_migrations
+
     graph = load_migrations(tmp_path)
     m = graph.by_revision["abcdef012345"]
     assert m.down_revision is None
@@ -327,20 +377,34 @@ def test_emit_imports_selectfield_only_when_used():
     """SelectField appears in imports when a select-type CF is created;
     not otherwise."""
     src_select = render_autogenerated(
-        "x", parents=None, revision="r",
-        changes=[CreateCustomField(
-            alias="a", name="A", type_id=SelectField.jira_type_id,
-            description="", options=("X",),
-        )],
+        "x",
+        parents=None,
+        revision="r",
+        changes=[
+            CreateCustomField(
+                alias="a",
+                name="A",
+                type_id=SelectField.jira_type_id,
+                description="",
+                options=("X",),
+            )
+        ],
     )
     assert "from pensum.fields import SelectField" in src_select
 
     src_text = render_autogenerated(
-        "x", parents=None, revision="r",
-        changes=[CreateCustomField(
-            alias="a", name="A", type_id=TextField.jira_type_id,
-            description="", options=(),
-        )],
+        "x",
+        parents=None,
+        revision="r",
+        changes=[
+            CreateCustomField(
+                alias="a",
+                name="A",
+                type_id=TextField.jira_type_id,
+                description="",
+                options=(),
+            )
+        ],
     )
     assert "from pensum.fields import TextField" in src_text
     assert "SelectField" not in src_text
@@ -349,11 +413,18 @@ def test_emit_imports_selectfield_only_when_used():
 def test_emit_downgrade_always_op_unsupported():
     """Per policy, generated downgrades are op.unsupported."""
     src = render_autogenerated(
-        "x", parents=None, revision="r",
-        changes=[CreateCustomField(
-            alias="a", name="A", type_id=TextField.jira_type_id,
-            description="", options=(),
-        )],
+        "x",
+        parents=None,
+        revision="r",
+        changes=[
+            CreateCustomField(
+                alias="a",
+                name="A",
+                type_id=TextField.jira_type_id,
+                description="",
+                options=(),
+            )
+        ],
     )
     assert "op.unsupported(" in src
     assert "async def downgrade()" in src
@@ -365,19 +436,25 @@ async def test_autogenerate_end_to_end_via_python_api(tmp_path):
     """Without going through CLI: load schema, build desired, diff against
     empty Jira, render — the output compiles and reloads cleanly."""
     import examples.platform  # noqa: F401
+
     desired = build_desired_snapshot()
     state = StateFile(env="dev", jira_url="x")
     result = diff(
-        desired=desired, snapshot=_empty_snapshot(), state=state,
+        desired=desired,
+        snapshot=_empty_snapshot(),
+        state=state,
         allow_delete=False,
     )
     assert result.changes
     src = render_autogenerated(
-        "stand up platform", parents=None, revision="cafebabe1234",
+        "stand up platform",
+        parents=None,
+        revision="cafebabe1234",
         changes=result.changes,
     )
     p = tmp_path / "2026_05_20_1200_stand_up_platform.py"
     p.write_text(src)
     from pensum import load_migrations
+
     graph = load_migrations(tmp_path)
     assert "cafebabe1234" in graph.by_revision

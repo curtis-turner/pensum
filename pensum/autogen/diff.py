@@ -19,13 +19,6 @@ from typing import TYPE_CHECKING, Any
 
 from pensum.autogen.desired import (
     DesiredCustomField,
-    DesiredFieldConfiguration,
-    DesiredFieldConfigurationScheme,
-    DesiredIssueType,
-    DesiredIssueTypeScreenScheme,
-    DesiredProject,
-    DesiredScreen,
-    DesiredScreenScheme,
     DesiredSnapshot,
 )
 
@@ -178,6 +171,30 @@ class DeleteFieldConfiguration(Change):
 
 # Issue-type screen schemes
 @dataclass
+class CreateIssueTypeScheme(Change):
+    alias: str
+    name: str
+    description: str
+    issuetypes: tuple[str, ...]  # ordered issuetype aliases
+    default_issuetype: str  # alias; must be in ``issuetypes``
+
+
+@dataclass
+class UpdateIssueTypeScheme(Change):
+    alias: str
+    name: str | None = None
+    description: str | None = None
+    default_issuetype: str | None = None
+    issuetypes: tuple[str, ...] | None = None
+
+
+@dataclass
+class DeleteIssueTypeScheme(Change):
+    alias: str
+
+
+# Issue type screen schemes
+@dataclass
 class CreateIssueTypeScreenScheme(Change):
     alias: str
     name: str
@@ -240,6 +257,12 @@ class UpdateProject(Change):
 
 
 @dataclass
+class SetProjectIssueTypeScheme(Change):
+    project_alias: str
+    scheme_alias: str
+
+
+@dataclass
 class SetProjectIssueTypeScreenScheme(Change):
     project_alias: str
     scheme_alias: str
@@ -277,8 +300,8 @@ class DiffResult:
 def diff(
     *,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool = False,
 ) -> DiffResult:
     """Return ordered Change list + warnings. Phase order applied by emit.
@@ -293,6 +316,7 @@ def diff(
     _diff_field_configurations(r, desired, snapshot, state, allow_delete)
     _diff_screens(r, desired, snapshot, state, allow_delete)
     _diff_screen_schemes(r, desired, snapshot, state, allow_delete)
+    _diff_its(r, desired, snapshot, state, allow_delete)
     _diff_itss(r, desired, snapshot, state, allow_delete)
     _diff_fcs(r, desired, snapshot, state, allow_delete)
     _diff_projects(r, desired, snapshot, state, allow_delete)
@@ -303,16 +327,21 @@ def diff(
 def _diff_custom_fields(
     r: DiffResult,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool,
 ) -> None:
     for alias, want in desired.custom_fields.items():
         if alias not in state.custom_fields:
-            r.changes.append(CreateCustomField(
-                alias=alias, name=want.name, type_id=want.type_id,
-                description=want.description, options=want.options,
-            ))
+            r.changes.append(
+                CreateCustomField(
+                    alias=alias,
+                    name=want.name,
+                    type_id=want.type_id,
+                    description=want.description,
+                    options=want.options,
+                )
+            )
             continue
         existing_id = state.custom_fields[alias].id
         actual = snapshot.custom_fields.get(existing_id)
@@ -325,13 +354,18 @@ def _diff_custom_fields(
         # Attribute diff
         name_change = want.name if actual.name != want.name else None
         desc_change = (
-            want.description if actual.type_id and want.description != ""
-            and not _descriptions_match(actual, want) else None
+            want.description
+            if actual.type_id and want.description != "" and not _descriptions_match(actual, want)
+            else None
         )
         if name_change is not None or desc_change is not None:
-            r.changes.append(UpdateCustomField(
-                alias=alias, name=name_change, description=desc_change,
-            ))
+            r.changes.append(
+                UpdateCustomField(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                )
+            )
         # Option diff (additions / removals)
         actual_opts = set(actual.options)
         want_opts = set(want.options)
@@ -339,9 +373,12 @@ def _diff_custom_fields(
             r.changes.append(AddCustomFieldOption(field_alias=alias, value=new_val))
         for old_val in sorted(actual_opts - want_opts):
             if allow_delete:
-                r.changes.append(RemoveCustomFieldOption(
-                    field_alias=alias, value=old_val,
-                ))
+                r.changes.append(
+                    RemoveCustomFieldOption(
+                        field_alias=alias,
+                        value=old_val,
+                    )
+                )
             else:
                 r.warnings.append(
                     f"custom_field {alias!r}: option {old_val!r} is in Jira but "
@@ -354,7 +391,10 @@ def _diff_custom_fields(
                 r.changes.append(DeleteCustomField(alias=alias))
     else:
         _warn_orphans(
-            r, "custom_field", state.custom_fields, desired.custom_fields,
+            r,
+            "custom_field",
+            state.custom_fields,
+            desired.custom_fields,
         )
 
 
@@ -369,31 +409,36 @@ def _descriptions_match(actual: Any, want: DesiredCustomField) -> bool:
 def _diff_issuetypes(
     r: DiffResult,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool,
 ) -> None:
     for alias, want in desired.issuetypes.items():
         if alias not in state.issuetypes:
-            r.changes.append(CreateIssueType(
-                alias=alias, name=want.name,
-                description=want.description, subtask=want.subtask,
-            ))
+            r.changes.append(
+                CreateIssueType(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    subtask=want.subtask,
+                )
+            )
             continue
         existing_id = state.issuetypes[alias].id
         actual = snapshot.issuetypes.get(existing_id)
         if actual is None:
-            r.warnings.append(
-                f"issuetype {alias!r}: state references id {existing_id!r} but "
-                f"it's not present in Jira"
-            )
+            r.warnings.append(f"issuetype {alias!r}: state references id {existing_id!r} but it's not present in Jira")
             continue
         name_change = want.name if actual.name != want.name else None
         desc_change = want.description if actual.description != want.description else None
         if name_change is not None or desc_change is not None:
-            r.changes.append(UpdateIssueType(
-                alias=alias, name=name_change, description=desc_change,
-            ))
+            r.changes.append(
+                UpdateIssueType(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                )
+            )
 
     if allow_delete:
         for alias in sorted(state.issuetypes):
@@ -407,39 +452,46 @@ def _diff_issuetypes(
 def _diff_screens(
     r: DiffResult,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool,
 ) -> None:
     for alias, want in desired.screens.items():
         if alias not in state.screens:
-            r.changes.append(CreateScreen(
-                alias=alias, name=want.name, description=want.description,
-            ))
+            r.changes.append(
+                CreateScreen(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                )
+            )
             # Always one tab "Fields" in 0.1
             tab = want.tabs[0]
             r.changes.append(AddScreenTab(screen_alias=alias, tab_name=tab.name))
             for field_ref in tab.field_refs:
-                r.changes.append(AddScreenTabField(
-                    screen_alias=alias, tab_name=tab.name, field_alias=field_ref,
-                ))
+                r.changes.append(
+                    AddScreenTabField(
+                        screen_alias=alias,
+                        tab_name=tab.name,
+                        field_alias=field_ref,
+                    )
+                )
             continue
         existing_id = state.screens[alias].id
         actual = snapshot.screens.get(existing_id)
         if actual is None:
-            r.warnings.append(
-                f"screen {alias!r}: state references id {existing_id!r} but "
-                f"it's not present in Jira"
-            )
+            r.warnings.append(f"screen {alias!r}: state references id {existing_id!r} but it's not present in Jira")
             continue
         name_change = want.name if actual.name != want.name else None
-        desc_change = (
-            want.description if actual.description != want.description else None
-        )
+        desc_change = want.description if actual.description != want.description else None
         if name_change is not None or desc_change is not None:
-            r.changes.append(UpdateScreen(
-                alias=alias, name=name_change, description=desc_change,
-            ))
+            r.changes.append(
+                UpdateScreen(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                )
+            )
         # Note: tab/field changes on existing screens are NOT diffed in 0.1.
         # The Snapshot.screens[id].tabs use Jira IDs but want.tabs use aliases —
         # the comparison requires bidirectional id↔alias resolution that adds
@@ -457,29 +509,30 @@ def _diff_screens(
 def _diff_screen_schemes(
     r: DiffResult,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool,
 ) -> None:
     for alias, want in desired.screen_schemes.items():
         if alias not in state.screen_schemes:
-            r.changes.append(CreateScreenScheme(
-                alias=alias, name=want.name, description=want.description,
-                screens=dict(want.screens),
-            ))
+            r.changes.append(
+                CreateScreenScheme(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    screens=dict(want.screens),
+                )
+            )
             continue
         existing_id = state.screen_schemes[alias].id
         actual = snapshot.screen_schemes.get(existing_id)
         if actual is None:
             r.warnings.append(
-                f"screen_scheme {alias!r}: state references id {existing_id!r} "
-                f"but it's not present in Jira"
+                f"screen_scheme {alias!r}: state references id {existing_id!r} but it's not present in Jira"
             )
             continue
         name_change = want.name if actual.name != want.name else None
-        desc_change = (
-            want.description if actual.description != want.description else None
-        )
+        desc_change = want.description if actual.description != want.description else None
         # Resolve want.screens (op → screen alias) to Jira IDs for comparison
         want_screens_ids: dict[str, str] = {}
         for screen_op, screen_alias in want.screens.items():
@@ -488,14 +541,16 @@ def _diff_screen_schemes(
                 want_screens_ids[screen_op] = screen_mapping.id
             # else: schema references a screen not in state — handled by
             # the screen's own diff (will be created in this same migration).
-        screens_change = (
-            dict(want.screens) if want_screens_ids != actual.mappings else None
-        )
+        screens_change = dict(want.screens) if want_screens_ids != actual.mappings else None
         if name_change is not None or desc_change is not None or screens_change is not None:
-            r.changes.append(UpdateScreenScheme(
-                alias=alias, name=name_change, description=desc_change,
-                screens=screens_change,
-            ))
+            r.changes.append(
+                UpdateScreenScheme(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                    screens=screens_change,
+                )
+            )
 
     if allow_delete:
         for alias in sorted(state.screen_schemes):
@@ -505,42 +560,115 @@ def _diff_screen_schemes(
         _warn_orphans(r, "screen_scheme", state.screen_schemes, desired.screen_schemes)
 
 
+# ── IssueTypeScheme ──────────────────────────────────────────────────
+def _diff_its(
+    r: DiffResult,
+    desired: DesiredSnapshot,
+    snapshot: Snapshot,
+    state: StateFile,
+    allow_delete: bool,
+) -> None:
+    for alias, want in desired.issuetype_schemes.items():
+        if alias not in state.issuetype_schemes:
+            r.changes.append(
+                CreateIssueTypeScheme(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    issuetypes=want.issuetypes,
+                    default_issuetype=want.default_issuetype,
+                )
+            )
+            continue
+        existing_id = state.issuetype_schemes[alias].id
+        actual = snapshot.issuetype_schemes.get(existing_id)
+        if actual is None:
+            r.warnings.append(
+                f"issuetype_scheme {alias!r}: state references id {existing_id!r} but it's not present in Jira"
+            )
+            continue
+        name_change = want.name if actual.name != want.name else None
+        desc_change = want.description if actual.description != want.description else None
+        # Compare desired issuetype aliases (resolved to ids via state) against actual ids.
+        desired_ids: list[str] = []
+        for it_alias in want.issuetypes:
+            m = state.issuetypes.get(it_alias)
+            if m is None:
+                # Member is a desired issuetype that hasn't been stamped/created yet —
+                # the diff for that issuetype runs earlier in the same migration. Skip
+                # the list-level compare; the create-side change is what matters here.
+                desired_ids = []
+                break
+            desired_ids.append(m.id)
+        members_change: tuple[str, ...] | None = None
+        if desired_ids and tuple(desired_ids) != tuple(actual.issuetype_ids):
+            members_change = want.issuetypes
+        default_m = state.issuetypes.get(want.default_issuetype)
+        default_change: str | None = None
+        if default_m is not None and actual.default_issuetype_id != default_m.id:
+            default_change = want.default_issuetype
+        if any(c is not None for c in (name_change, desc_change, members_change, default_change)):
+            r.changes.append(
+                UpdateIssueTypeScheme(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                    issuetypes=members_change,
+                    default_issuetype=default_change,
+                )
+            )
+
+    if allow_delete:
+        for alias in sorted(state.issuetype_schemes):
+            if alias not in desired.issuetype_schemes:
+                r.changes.append(DeleteIssueTypeScheme(alias=alias))
+    else:
+        _warn_orphans(
+            r,
+            "issuetype_scheme",
+            state.issuetype_schemes,
+            desired.issuetype_schemes,
+        )
+
+
 # ── ITSS ─────────────────────────────────────────────────────────────
 def _diff_itss(
     r: DiffResult,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool,
 ) -> None:
     for alias, want in desired.issuetype_screen_schemes.items():
         if alias not in state.issuetype_screen_schemes:
-            r.changes.append(CreateIssueTypeScreenScheme(
-                alias=alias, name=want.name, description=want.description,
-                mappings=dict(want.mappings),
-            ))
+            r.changes.append(
+                CreateIssueTypeScreenScheme(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    mappings=dict(want.mappings),
+                )
+            )
             continue
         existing_id = state.issuetype_screen_schemes[alias].id
         actual = snapshot.issuetype_screen_schemes.get(existing_id)
         if actual is None:
             r.warnings.append(
-                f"issuetype_screen_scheme {alias!r}: state references id "
-                f"{existing_id!r} but it's not present in Jira"
+                f"issuetype_screen_scheme {alias!r}: state references id {existing_id!r} but it's not present in Jira"
             )
             continue
         name_change = want.name if actual.name != want.name else None
-        desc_change = (
-            want.description if actual.description != want.description else None
-        )
+        desc_change = want.description if actual.description != want.description else None
         mappings_change = _itss_mappings_changed(want, actual, state)
-        if (
-            name_change is not None or desc_change is not None
-            or mappings_change is not None
-        ):
-            r.changes.append(UpdateIssueTypeScreenScheme(
-                alias=alias, name=name_change, description=desc_change,
-                mappings=mappings_change,
-            ))
+        if name_change is not None or desc_change is not None or mappings_change is not None:
+            r.changes.append(
+                UpdateIssueTypeScreenScheme(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                    mappings=mappings_change,
+                )
+            )
 
     if allow_delete:
         for alias in sorted(state.issuetype_screen_schemes):
@@ -548,8 +676,10 @@ def _diff_itss(
                 r.changes.append(DeleteIssueTypeScreenScheme(alias=alias))
     else:
         _warn_orphans(
-            r, "issuetype_screen_scheme",
-            state.issuetype_screen_schemes, desired.issuetype_screen_schemes,
+            r,
+            "issuetype_screen_scheme",
+            state.issuetype_screen_schemes,
+            desired.issuetype_screen_schemes,
         )
 
 
@@ -557,16 +687,20 @@ def _diff_itss(
 def _diff_fcs(
     r: DiffResult,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool,
 ) -> None:
     for alias, want in desired.field_configuration_schemes.items():
         if alias not in state.field_configuration_schemes:
-            r.changes.append(CreateFieldConfigurationScheme(
-                alias=alias, name=want.name, description=want.description,
-                mappings=dict(want.mappings),
-            ))
+            r.changes.append(
+                CreateFieldConfigurationScheme(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                    mappings=dict(want.mappings),
+                )
+            )
             continue
         existing_id = state.field_configuration_schemes[alias].id
         actual = snapshot.field_configuration_schemes.get(existing_id)
@@ -577,18 +711,17 @@ def _diff_fcs(
             )
             continue
         name_change = want.name if actual.name != want.name else None
-        desc_change = (
-            want.description if actual.description != want.description else None
-        )
+        desc_change = want.description if actual.description != want.description else None
         mappings_change = _fcs_mappings_changed(want, actual, state)
-        if (
-            name_change is not None or desc_change is not None
-            or mappings_change is not None
-        ):
-            r.changes.append(UpdateFieldConfigurationScheme(
-                alias=alias, name=name_change, description=desc_change,
-                mappings=mappings_change,
-            ))
+        if name_change is not None or desc_change is not None or mappings_change is not None:
+            r.changes.append(
+                UpdateFieldConfigurationScheme(
+                    alias=alias,
+                    name=name_change,
+                    description=desc_change,
+                    mappings=mappings_change,
+                )
+            )
 
     if allow_delete:
         for alias in sorted(state.field_configuration_schemes):
@@ -596,7 +729,8 @@ def _diff_fcs(
                 r.changes.append(DeleteFieldConfigurationScheme(alias=alias))
     else:
         _warn_orphans(
-            r, "field_configuration_scheme",
+            r,
+            "field_configuration_scheme",
             state.field_configuration_schemes,
             desired.field_configuration_schemes,
         )
@@ -606,20 +740,28 @@ def _diff_fcs(
 def _diff_field_configurations(
     r: DiffResult,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool,
 ) -> None:
     for alias, want in desired.field_configurations.items():
         if alias not in state.field_configurations:
-            r.changes.append(CreateFieldConfiguration(
-                alias=alias, name=want.name, description=want.description,
-            ))
+            r.changes.append(
+                CreateFieldConfiguration(
+                    alias=alias,
+                    name=want.name,
+                    description=want.description,
+                )
+            )
             for item in want.items:
-                r.changes.append(SetFieldConfigurationItem(
-                    fc_alias=alias, field_alias=item.field_alias,
-                    required=item.required, hidden=item.hidden,
-                ))
+                r.changes.append(
+                    SetFieldConfigurationItem(
+                        fc_alias=alias,
+                        field_alias=item.field_alias,
+                        required=item.required,
+                        hidden=item.hidden,
+                    )
+                )
             continue
         # Existing FC — name/desc diff. Item changes are not diffed in 0.1
         # (would need to round-trip field_id → alias which depends on state).
@@ -627,8 +769,7 @@ def _diff_field_configurations(
         actual = snapshot.field_configurations.get(existing_id)
         if actual is None:
             r.warnings.append(
-                f"field_configuration {alias!r}: state references id {existing_id!r} "
-                f"but it's not present in Jira"
+                f"field_configuration {alias!r}: state references id {existing_id!r} but it's not present in Jira"
             )
             continue
         # No update_field_configuration_header op exists yet — skip name/desc.
@@ -639,8 +780,10 @@ def _diff_field_configurations(
                 r.changes.append(DeleteFieldConfiguration(alias=alias))
     else:
         _warn_orphans(
-            r, "field_configuration",
-            state.field_configurations, desired.field_configurations,
+            r,
+            "field_configuration",
+            state.field_configurations,
+            desired.field_configurations,
         )
 
 
@@ -648,34 +791,49 @@ def _diff_field_configurations(
 def _diff_projects(
     r: DiffResult,
     desired: DesiredSnapshot,
-    snapshot: "Snapshot",
-    state: "StateFile",
+    snapshot: Snapshot,
+    state: StateFile,
     allow_delete: bool,
 ) -> None:
     for alias, want in desired.projects.items():
         if alias not in state.projects:
-            r.changes.append(CreateProject(
-                alias=alias, key=want.key, name=want.name,
-                project_type_key=want.project_type_key, lead=want.lead,
-                description=want.description,
-            ))
+            r.changes.append(
+                CreateProject(
+                    alias=alias,
+                    key=want.key,
+                    name=want.name,
+                    project_type_key=want.project_type_key,
+                    lead=want.lead,
+                    description=want.description,
+                )
+            )
+            if want.issuetype_scheme is not None:
+                r.changes.append(
+                    SetProjectIssueTypeScheme(
+                        project_alias=alias,
+                        scheme_alias=want.issuetype_scheme,
+                    )
+                )
             if want.issuetype_screen_scheme is not None:
-                r.changes.append(SetProjectIssueTypeScreenScheme(
-                    project_alias=alias, scheme_alias=want.issuetype_screen_scheme,
-                ))
+                r.changes.append(
+                    SetProjectIssueTypeScreenScheme(
+                        project_alias=alias,
+                        scheme_alias=want.issuetype_screen_scheme,
+                    )
+                )
             if want.field_configuration_scheme is not None:
-                r.changes.append(SetProjectFieldConfigurationScheme(
-                    project_alias=alias, scheme_alias=want.field_configuration_scheme,
-                ))
+                r.changes.append(
+                    SetProjectFieldConfigurationScheme(
+                        project_alias=alias,
+                        scheme_alias=want.field_configuration_scheme,
+                    )
+                )
             continue
         # Existing project — name/lead/description diff.
         existing_id = state.projects[alias].id
         actual = _find_project_by_id(snapshot, existing_id)
         if actual is None:
-            r.warnings.append(
-                f"project {alias!r}: state references id {existing_id!r} but "
-                f"it's not present in Jira"
-            )
+            r.warnings.append(f"project {alias!r}: state references id {existing_id!r} but it's not present in Jira")
             continue
         # Style mismatch is informational only — Jira does not allow style
         # conversion via REST. The schema needs to align with Jira, or the
@@ -688,13 +846,15 @@ def _diff_projects(
                 f"conversion via REST; align the schema or recreate the project."
             )
         name_change = want.name if actual.name != want.name else None
-        lead_change = (
-            want.lead if want.lead and actual.lead != want.lead else None
-        )
+        lead_change = want.lead if want.lead and actual.lead != want.lead else None
         if name_change is not None or lead_change is not None:
-            r.changes.append(UpdateProject(
-                alias=alias, name=name_change, lead=lead_change,
-            ))
+            r.changes.append(
+                UpdateProject(
+                    alias=alias,
+                    name=name_change,
+                    lead=lead_change,
+                )
+            )
 
     if allow_delete:
         for alias in sorted(state.projects):
@@ -707,7 +867,9 @@ def _diff_projects(
 
 
 def _resolve_project_key(
-    alias: str, state: "StateFile", snapshot: "Snapshot",
+    alias: str,
+    state: StateFile,
+    snapshot: Snapshot,
 ) -> str | None:
     project_id = state.projects[alias].id
     for proj in snapshot.projects.values():
@@ -716,14 +878,14 @@ def _resolve_project_key(
     return None
 
 
-def _find_project_by_id(snapshot: "Snapshot", project_id: str):
+def _find_project_by_id(snapshot: Snapshot, project_id: str):
     for proj in snapshot.projects.values():
         if proj.id == project_id:
             return proj
     return None
 
 
-def _itss_mappings_changed(want, actual, state: "StateFile") -> dict[str, str] | None:
+def _itss_mappings_changed(want, actual, state: StateFile) -> dict[str, str] | None:
     """Resolve desired mappings (alias→alias) to id-comparable form and compare
     with the snapshot's mappings tuple. Return desired mappings if different,
     None if identical."""
@@ -748,7 +910,7 @@ def _itss_mappings_changed(want, actual, state: "StateFile") -> dict[str, str] |
     return dict(want.mappings)
 
 
-def _fcs_mappings_changed(want, actual, state: "StateFile") -> dict[str, str] | None:
+def _fcs_mappings_changed(want, actual, state: StateFile) -> dict[str, str] | None:
     """Same as _itss_mappings_changed for field configuration schemes."""
     want_resolved: dict[str, str] = {}
     for it_alias, fc_alias in want.mappings.items():
@@ -771,8 +933,10 @@ def _fcs_mappings_changed(want, actual, state: "StateFile") -> dict[str, str] | 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 def _warn_orphans(
-    r: DiffResult, type_name: str,
-    state_table: dict, desired_table: dict,
+    r: DiffResult,
+    type_name: str,
+    state_table: dict,
+    desired_table: dict,
 ) -> None:
     for alias in sorted(state_table):
         if alias not in desired_table:

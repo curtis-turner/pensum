@@ -13,10 +13,8 @@ from pensum.fields import SelectField, TextField
 from pensum.registry import registry
 from pensum.state.snapshot import (
     CustomFieldSnapshot,
-    IssueTypeSnapshot,
     ProjectSnapshot,
     ScreenSnapshot,
-    ScreenSchemeSnapshot,
     ScreenTabSnapshot,
     ServerInfoSnapshot,
     Snapshot,
@@ -33,9 +31,13 @@ def _isolate_registry():
 
 
 def _empty_snapshot() -> Snapshot:
-    return Snapshot(server_info=ServerInfoSnapshot(
-        deployment_type="Server", version="9", base_url="x",
-    ))
+    return Snapshot(
+        server_info=ServerInfoSnapshot(
+            deployment_type="Server",
+            version="9",
+            base_url="x",
+        )
+    )
 
 
 # ── Match by name ────────────────────────────────────────────────────
@@ -46,7 +48,8 @@ def test_stamp_matches_custom_field_by_name():
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
     snap.custom_fields["customfield_10042"] = CustomFieldSnapshot(
-        id="customfield_10042", name="Severity",
+        id="customfield_10042",
+        name="Severity",
         type_id=TextField.jira_type_id,
     )
     report = stamp(state, snap)
@@ -58,13 +61,16 @@ def test_stamp_matches_select_field_with_options():
     from pensum.fields import CustomField
 
     CustomField(
-        alias="bug_severity", name="Severity", type=SelectField,
+        alias="bug_severity",
+        name="Severity",
+        type=SelectField,
         options=["S1", "S2"],
     )
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
     snap.custom_fields["customfield_10042"] = CustomFieldSnapshot(
-        id="customfield_10042", name="Severity",
+        id="customfield_10042",
+        name="Severity",
         type_id=SelectField.jira_type_id,
         options={"S1": "100", "S2": "101"},
     )
@@ -81,7 +87,9 @@ def test_stamp_matches_screen_and_populates_tab_ids():
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
     snap.screens["scr-1"] = ScreenSnapshot(
-        id="scr-1", name="Bug Screen", description="",
+        id="scr-1",
+        name="Bug Screen",
+        description="",
         tabs=(ScreenTabSnapshot(id="tab-7", name="Fields"),),
     )
     report = stamp(state, snap)
@@ -91,10 +99,13 @@ def test_stamp_matches_screen_and_populates_tab_ids():
 
 def test_stamp_matches_project_by_key():
     import examples.platform  # noqa: F401
+
     state = StateFile(env="dev", jira_url="x")
     snap = _empty_snapshot()
     snap.projects["PLAT"] = ProjectSnapshot(
-        id="p-1", key="PLAT", name="Platform",
+        id="p-1",
+        key="PLAT",
+        name="Platform",
     )
     # Add the rest of the platform's expected objects so stamp doesn't choke;
     # but we only assert the project match here.
@@ -126,15 +137,14 @@ def test_stamp_skips_if_alias_already_mapped_to_different_id():
 
     snap = _empty_snapshot()
     snap.custom_fields["customfield_NEW"] = CustomFieldSnapshot(
-        id="customfield_NEW", name="Severity", type_id=TextField.jira_type_id,
+        id="customfield_NEW",
+        name="Severity",
+        type_id=TextField.jira_type_id,
     )
     report = stamp(state, snap)
     # No match recorded (state preserved); skipped emitted.
     assert state.custom_fields["bug_severity"].id == "customfield_OLD"
-    assert any(
-        kind == "custom_field" and alias == "bug_severity"
-        for kind, alias, _ in report.skipped
-    )
+    assert any(kind == "custom_field" and alias == "bug_severity" for kind, alias, _ in report.skipped)
 
 
 # ── Derived schemes (ITSS/FCS by synthesized name) ──────────────────
@@ -148,7 +158,8 @@ def test_stamp_matches_derived_itss_by_synthesized_name():
     from pensum.state.snapshot import IssueTypeScreenSchemeSnapshot
 
     snap.issuetype_screen_schemes["itss-1"] = IssueTypeScreenSchemeSnapshot(
-        id="itss-1", name="PLAT Issue Type Screen Scheme",
+        id="itss-1",
+        name="PLAT Issue Type Screen Scheme",
     )
     report = stamp(state, snap)
     assert ("issuetype_screen_scheme", "PLAT_itss", "itss-1") in report.matched
@@ -166,81 +177,128 @@ def _paginated(values):
 @respx.mock
 def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     """End-to-end: stamp loads schema, hits /reflect endpoints, writes state."""
-    respx.get(f"{DC_ROOT}/serverInfo").mock(return_value=httpx.Response(200, json={
-        "baseUrl": BASE, "version": "9", "deploymentType": "Server",
-    }))
-    respx.get(f"{DC_ROOT}/field").mock(return_value=httpx.Response(200, json=[
-        {"id": "customfield_10042", "name": "Severity",
-         "schema": {"custom": SelectField.jira_type_id}},
-        {"id": "customfield_10043", "name": "Root Cause",
-         "schema": {"custom": TextField.jira_type_id}},
-    ]))
-    respx.get(f"{DC_ROOT}/field/customfield_10042/option").mock(
-        return_value=httpx.Response(200, json=[
-            {"id": "100", "value": "S1"}, {"id": "101", "value": "S2"},
-            {"id": "102", "value": "S3"}, {"id": "103", "value": "S4"},
-        ])
+    respx.get(f"{DC_ROOT}/serverInfo").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "baseUrl": BASE,
+                "version": "9",
+                "deploymentType": "Server",
+            },
+        )
     )
-    respx.get(f"{DC_ROOT}/issuetype").mock(return_value=httpx.Response(200, json=[
-        {"id": "10010", "name": "Bug", "description": "", "subtask": False},
-    ]))
+    respx.get(f"{DC_ROOT}/field").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": "customfield_10042", "name": "Severity", "schema": {"custom": SelectField.jira_type_id}},
+                {"id": "customfield_10043", "name": "Root Cause", "schema": {"custom": TextField.jira_type_id}},
+            ],
+        )
+    )
+    respx.get(f"{DC_ROOT}/field/customfield_10042/option").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": "100", "value": "S1"},
+                {"id": "101", "value": "S2"},
+                {"id": "102", "value": "S3"},
+                {"id": "103", "value": "S4"},
+            ],
+        )
+    )
+    respx.get(f"{DC_ROOT}/issuetype").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": "10010", "name": "Bug", "description": "", "subtask": False},
+            ],
+        )
+    )
     respx.get(f"{DC_ROOT}/project/search").mock(
-        return_value=httpx.Response(200, json=_paginated([
-            {"id": "p-1", "key": "PLAT", "name": "Platform"},
-        ]))
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {"id": "p-1", "key": "PLAT", "name": "Platform"},
+                ]
+            ),
+        )
     )
     respx.get(f"{DC_ROOT}/screens").mock(
-        return_value=httpx.Response(200, json=_paginated([
-            {"id": "scr-1", "name": "Bug Create Screen"},
-            {"id": "scr-2", "name": "Bug Edit Screen"},
-            {"id": "scr-3", "name": "Bug View Screen"},
-        ]))
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {"id": "scr-1", "name": "Bug Create Screen"},
+                    {"id": "scr-2", "name": "Bug Edit Screen"},
+                    {"id": "scr-3", "name": "Bug View Screen"},
+                ]
+            ),
+        )
     )
     for sid in ("scr-1", "scr-2", "scr-3"):
         respx.get(f"{DC_ROOT}/screens/{sid}/tabs").mock(
             return_value=httpx.Response(200, json=[{"id": f"{sid}-tab", "name": "Fields"}])
         )
-        respx.get(f"{DC_ROOT}/screens/{sid}/tabs/{sid}-tab/fields").mock(
-            return_value=httpx.Response(200, json=[])
-        )
+        respx.get(f"{DC_ROOT}/screens/{sid}/tabs/{sid}-tab/fields").mock(return_value=httpx.Response(200, json=[]))
     respx.get(f"{DC_ROOT}/screenscheme").mock(
-        return_value=httpx.Response(200, json=_paginated([
-            {"id": "ss-1", "name": "Bug Screen Scheme",
-             "screens": {"default": "scr-3", "create": "scr-1", "edit": "scr-2"}},
-        ]))
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {
+                        "id": "ss-1",
+                        "name": "Bug Screen Scheme",
+                        "screens": {"default": "scr-3", "create": "scr-1", "edit": "scr-2"},
+                    },
+                ]
+            ),
+        )
     )
-    respx.get(f"{DC_ROOT}/issuetypescreenscheme").mock(
-        return_value=httpx.Response(200, json=_paginated([]))
-    )
+    respx.get(f"{DC_ROOT}/issuetypescheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{DC_ROOT}/issuetypescheme/mapping").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{DC_ROOT}/issuetypescreenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
     respx.get(f"{DC_ROOT}/fieldconfiguration").mock(
-        return_value=httpx.Response(200, json=_paginated([
-            {"id": "fc-1", "name": "Bug Field Configuration"},
-        ]))
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {"id": "fc-1", "name": "Bug Field Configuration"},
+                ]
+            ),
+        )
     )
-    respx.get(f"{DC_ROOT}/fieldconfiguration/fc-1/items").mock(
-        return_value=httpx.Response(200, json=_paginated([]))
-    )
-    respx.get(f"{DC_ROOT}/fieldconfigurationscheme").mock(
-        return_value=httpx.Response(200, json=_paginated([]))
-    )
+    respx.get(f"{DC_ROOT}/fieldconfiguration/fc-1/items").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{DC_ROOT}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
 
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("PENSUM_TOKEN", "tok")
-    rc = main([
-        "stamp",
-        "--schema", "examples.platform",
-        "--state", str(state_path),
-        "--env", "prod",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-    ])
+    rc = main(
+        [
+            "stamp",
+            "--schema",
+            "examples.platform",
+            "--state",
+            str(state_path),
+            "--env",
+            "prod",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "matched=" in out
     on_disk = StateFile.load(state_path)
     assert on_disk.custom_fields["bug_severity"].id == "customfield_10042"
     assert on_disk.custom_fields["bug_severity"].options == {
-        "S1": "100", "S2": "101", "S3": "102", "S4": "103",
+        "S1": "100",
+        "S2": "101",
+        "S3": "102",
+        "S4": "103",
     }
     assert on_disk.issuetypes["bug"].id == "10010"
     assert on_disk.projects["PLAT"].id == "p-1"

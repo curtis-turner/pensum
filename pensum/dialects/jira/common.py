@@ -16,6 +16,7 @@ from pensum.state.snapshot import (
     FieldConfigurationSchemeMappingSnapshot,
     FieldConfigurationSchemeSnapshot,
     FieldConfigurationSnapshot,
+    IssueTypeSchemeSnapshot,
     IssueTypeScreenSchemeMappingSnapshot,
     IssueTypeScreenSchemeSnapshot,
     IssueTypeSnapshot,
@@ -220,4 +221,25 @@ def parse_fcs_mapping(payload: dict[str, Any]) -> FieldConfigurationSchemeMappin
     return FieldConfigurationSchemeMappingSnapshot(
         issuetype_id=str(payload.get("issueTypeId", "default")),
         field_configuration_id=str(payload.get("fieldConfigurationId", "")),
+    )
+
+
+# ── Issue type schemes ────────────────────────────────────────────────
+def parse_issuetype_scheme_header(payload: dict[str, Any]) -> IssueTypeSchemeSnapshot:
+    """Scheme without members; members come from /issuetypescheme/mapping."""
+    default_id = payload.get("defaultIssueTypeId")
+    return IssueTypeSchemeSnapshot(
+        id=str(payload["id"]),
+        name=str(payload.get("name", "")),
+        description=str(payload.get("description", "")),
+        issuetype_ids=(),
+        default_issuetype_id=str(default_id) if default_id is not None else None,
+    )
+
+
+def parse_issuetype_scheme_mapping(payload: dict[str, Any]) -> tuple[str, str]:
+    """One row of /issuetypescheme/mapping. Returns (scheme_id, issuetype_id)."""
+    return (
+        str(payload.get("issueTypeSchemeId", "")),
+        str(payload.get("issueTypeId", "")),
     )

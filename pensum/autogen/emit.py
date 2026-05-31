@@ -27,6 +27,7 @@ from pensum.autogen.diff import (
     CreateFieldConfiguration,
     CreateFieldConfigurationScheme,
     CreateIssueType,
+    CreateIssueTypeScheme,
     CreateIssueTypeScreenScheme,
     CreateProject,
     CreateScreen,
@@ -35,6 +36,7 @@ from pensum.autogen.diff import (
     DeleteFieldConfiguration,
     DeleteFieldConfigurationScheme,
     DeleteIssueType,
+    DeleteIssueTypeScheme,
     DeleteIssueTypeScreenScheme,
     DeleteProject,
     DeleteScreen,
@@ -42,22 +44,30 @@ from pensum.autogen.diff import (
     RemoveCustomFieldOption,
     SetFieldConfigurationItem,
     SetProjectFieldConfigurationScheme,
+    SetProjectIssueTypeScheme,
     SetProjectIssueTypeScreenScheme,
     UpdateCustomField,
     UpdateFieldConfigurationScheme,
     UpdateIssueType,
+    UpdateIssueTypeScheme,
     UpdateIssueTypeScreenScheme,
     UpdateProject,
     UpdateScreen,
     UpdateScreenScheme,
 )
 from pensum.fields import (
-    DateField, DateTimeField, MultiSelectField, NumberField,
-    SelectField, TextAreaField, TextField, UserField, _FieldType,
+    DateField,
+    DateTimeField,
+    MultiSelectField,
+    NumberField,
+    SelectField,
+    TextAreaField,
+    TextField,
+    UserField,
+    _FieldType,
 )
 
-
-REVISION_ID_BYTES = 6   # 12 hex chars, plenty unique per project
+REVISION_ID_BYTES = 6  # 12 hex chars, plenty unique per project
 
 
 def new_revision_id() -> str:
@@ -118,9 +128,7 @@ def render_merge(
     revision: str | None = None,
 ) -> str:
     if len(parents) < 2:
-        raise ValueError(
-            f"render_merge: parents must have at least 2 revisions, got {parents!r}"
-        )
+        raise ValueError(f"render_merge: parents must have at least 2 revisions, got {parents!r}")
     revision = revision or new_revision_id()
     return f'''"""Merge {", ".join(p[:8] for p in parents)}: {message}
 
@@ -195,9 +203,11 @@ _PHASE: dict[type, int] = {
     AddScreenTabField: 21,
     SetFieldConfigurationItem: 22,
     CreateScreenScheme: 30,
+    CreateIssueTypeScheme: 39,
     CreateIssueTypeScreenScheme: 40,
     CreateFieldConfigurationScheme: 41,
     CreateProject: 50,
+    SetProjectIssueTypeScheme: 59,
     SetProjectIssueTypeScreenScheme: 60,
     SetProjectFieldConfigurationScheme: 61,
     UpdateCustomField: 70,
@@ -206,10 +216,12 @@ _PHASE: dict[type, int] = {
     UpdateIssueType: 73,
     UpdateScreen: 74,
     UpdateScreenScheme: 75,
+    UpdateIssueTypeScheme: 75,
     UpdateIssueTypeScreenScheme: 76,
     UpdateFieldConfigurationScheme: 77,
     UpdateProject: 78,
     DeleteProject: 80,
+    DeleteIssueTypeScheme: 80,
     DeleteIssueTypeScreenScheme: 81,
     DeleteFieldConfigurationScheme: 82,
     DeleteScreenScheme: 83,
@@ -223,11 +235,13 @@ _PHASE: dict[type, int] = {
 def sort_changes(changes: list[Change]) -> list[Change]:
     """Stable sort by (phase, affected_alias). Ties preserve input order."""
     indexed = list(enumerate(changes))
-    indexed.sort(key=lambda i_c: (
-        _PHASE.get(type(i_c[1]), 99),
-        _affected_alias(i_c[1]) or "",
-        i_c[0],
-    ))
+    indexed.sort(
+        key=lambda i_c: (
+            _PHASE.get(type(i_c[1]), 99),
+            _affected_alias(i_c[1]) or "",
+            i_c[0],
+        )
+    )
     return [c for _, c in indexed]
 
 
@@ -240,9 +254,16 @@ def _affected_alias(change: Change) -> str | None:
 
 # ── Per-change renderers ─────────────────────────────────────────────
 _FIELD_TYPE_BY_ID: dict[str, type[_FieldType]] = {
-    cls.jira_type_id: cls for cls in (
-        TextField, TextAreaField, SelectField, MultiSelectField,
-        UserField, NumberField, DateField, DateTimeField,
+    cls.jira_type_id: cls
+    for cls in (
+        TextField,
+        TextAreaField,
+        SelectField,
+        MultiSelectField,
+        UserField,
+        NumberField,
+        DateField,
+        DateTimeField,
     )
 }
 
@@ -256,9 +277,7 @@ def _render_imports(changes: list[Change]) -> str:
             if cls is not None:
                 field_classes.add(cls.__name__)
     if field_classes:
-        lines.append(
-            f"from pensum.fields import {', '.join(sorted(field_classes))}"
-        )
+        lines.append(f"from pensum.fields import {', '.join(sorted(field_classes))}")
     return "\n".join(lines)
 
 
@@ -272,13 +291,8 @@ def _render_one(change: Change) -> str:
     if isinstance(change, CreateCustomField):
         cls = _FIELD_TYPE_BY_ID.get(change.type_id)
         type_repr = cls.__name__ if cls else f'"unknown type {change.type_id}"'
-        options_kv = (
-            f",\n        options={list(change.options)!r}" if change.options else ""
-        )
-        desc_kv = (
-            f',\n        description={change.description!r}'
-            if change.description else ""
-        )
+        options_kv = f",\n        options={list(change.options)!r}" if change.options else ""
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
         return (
             f"    await op.create_custom_field(\n"
             f"        alias={change.alias!r},\n"
@@ -289,8 +303,10 @@ def _render_one(change: Change) -> str:
 
     if isinstance(change, UpdateCustomField):
         return _render_update(
-            "update_custom_field", alias=change.alias,
-            name=change.name, description=change.description,
+            "update_custom_field",
+            alias=change.alias,
+            name=change.name,
+            description=change.description,
         )
 
     if isinstance(change, AddCustomFieldOption):
@@ -314,10 +330,7 @@ def _render_one(change: Change) -> str:
 
     if isinstance(change, CreateIssueType):
         subtask_kv = ",\n        subtask=True" if change.subtask else ""
-        desc_kv = (
-            f',\n        description={change.description!r}'
-            if change.description else ""
-        )
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
         return (
             f"    await op.create_issuetype(\n"
             f"        alias={change.alias!r},\n"
@@ -327,18 +340,17 @@ def _render_one(change: Change) -> str:
 
     if isinstance(change, UpdateIssueType):
         return _render_update(
-            "update_issuetype", alias=change.alias,
-            name=change.name, description=change.description,
+            "update_issuetype",
+            alias=change.alias,
+            name=change.name,
+            description=change.description,
         )
 
     if isinstance(change, DeleteIssueType):
         return f"    await op.delete_issuetype(alias={change.alias!r})"
 
     if isinstance(change, CreateScreen):
-        desc_kv = (
-            f',\n        description={change.description!r}'
-            if change.description else ""
-        )
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
         return (
             f"    await op.create_screen(\n"
             f"        alias={change.alias!r},\n"
@@ -365,8 +377,10 @@ def _render_one(change: Change) -> str:
 
     if isinstance(change, UpdateScreen):
         return _render_update(
-            "update_screen", alias=change.alias,
-            name=change.name, description=change.description,
+            "update_screen",
+            alias=change.alias,
+            name=change.name,
+            description=change.description,
         )
 
     if isinstance(change, DeleteScreen):
@@ -374,10 +388,7 @@ def _render_one(change: Change) -> str:
 
     if isinstance(change, CreateScreenScheme):
         screens_str = _render_dict(change.screens)
-        desc_kv = (
-            f',\n        description={change.description!r}'
-            if change.description else ""
-        )
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
         return (
             f"    await op.create_screen_scheme(\n"
             f"        alias={change.alias!r},\n"
@@ -400,10 +411,7 @@ def _render_one(change: Change) -> str:
         return f"    await op.delete_screen_scheme(alias={change.alias!r})"
 
     if isinstance(change, CreateFieldConfiguration):
-        desc_kv = (
-            f',\n        description={change.description!r}'
-            if change.description else ""
-        )
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
         return (
             f"    await op.create_field_configuration(\n"
             f"        alias={change.alias!r},\n"
@@ -424,12 +432,42 @@ def _render_one(change: Change) -> str:
     if isinstance(change, DeleteFieldConfiguration):
         return f"    await op.delete_field_configuration(alias={change.alias!r})"
 
+    if isinstance(change, CreateIssueTypeScheme):
+        issuetypes_repr = "[" + ", ".join(repr(a) for a in change.issuetypes) + "]"
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
+        return (
+            f"    await op.create_issuetype_scheme(\n"
+            f"        alias={change.alias!r},\n"
+            f"        name={change.name!r}{desc_kv},\n"
+            f"        issuetypes={issuetypes_repr},\n"
+            f"        default_issuetype={change.default_issuetype!r},\n"
+            f"    )"
+        )
+
+    if isinstance(change, UpdateIssueTypeScheme):
+        kwargs = [f"alias={change.alias!r}"]
+        if change.name is not None:
+            kwargs.append(f"name={change.name!r}")
+        if change.description is not None:
+            kwargs.append(f"description={change.description!r}")
+        if change.default_issuetype is not None:
+            kwargs.append(f"default_issuetype={change.default_issuetype!r}")
+        return _kwargs_call("op.update_issuetype_scheme", kwargs)
+
+    if isinstance(change, DeleteIssueTypeScheme):
+        return f"    await op.delete_issuetype_scheme(alias={change.alias!r})"
+
+    if isinstance(change, SetProjectIssueTypeScheme):
+        return (
+            f"    await op.set_project_issuetype_scheme(\n"
+            f"        project_alias={change.project_alias!r},\n"
+            f"        scheme_alias={change.scheme_alias!r},\n"
+            f"    )"
+        )
+
     if isinstance(change, CreateIssueTypeScreenScheme):
         mappings_str = _render_dict(change.mappings)
-        desc_kv = (
-            f',\n        description={change.description!r}'
-            if change.description else ""
-        )
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
         return (
             f"    await op.create_issuetype_screen_scheme(\n"
             f"        alias={change.alias!r},\n"
@@ -453,10 +491,7 @@ def _render_one(change: Change) -> str:
 
     if isinstance(change, CreateFieldConfigurationScheme):
         mappings_str = _render_dict(change.mappings)
-        desc_kv = (
-            f',\n        description={change.description!r}'
-            if change.description else ""
-        )
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
         return (
             f"    await op.create_field_configuration_scheme(\n"
             f"        alias={change.alias!r},\n"
@@ -479,10 +514,7 @@ def _render_one(change: Change) -> str:
         return f"    await op.delete_field_configuration_scheme(alias={change.alias!r})"
 
     if isinstance(change, CreateProject):
-        desc_kv = (
-            f',\n        description={change.description!r}'
-            if change.description else ""
-        )
+        desc_kv = f",\n        description={change.description!r}" if change.description else ""
         return (
             f"    await op.create_project(\n"
             f"        alias={change.alias!r},\n"
@@ -510,12 +542,7 @@ def _render_one(change: Change) -> str:
         )
 
     if isinstance(change, DeleteProject):
-        return (
-            f"    await op.delete_project(\n"
-            f"        alias={change.alias!r},\n"
-            f"        key={change.key!r},\n"
-            f"    )"
-        )
+        return f"    await op.delete_project(\n        alias={change.alias!r},\n        key={change.key!r},\n    )"
 
     if isinstance(change, UpdateProject):
         kwargs = [f"alias={change.alias!r}"]

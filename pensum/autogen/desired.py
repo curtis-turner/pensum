@@ -87,6 +87,18 @@ class DesiredIssueTypeScreenScheme:
 
 
 @dataclass(frozen=True)
+class DesiredIssueTypeScheme:
+    """An IssueTypeScheme: the set of issuetypes available in a project. Pensum
+    synthesizes one per Project from its ``__issuetypes__`` list."""
+
+    alias: str
+    name: str
+    description: str
+    issuetypes: tuple[str, ...]  # ordered issuetype aliases
+    default_issuetype: str  # one of the entries in ``issuetypes``
+
+
+@dataclass(frozen=True)
 class DesiredFieldConfigurationScheme:
     alias: str
     name: str
@@ -97,13 +109,14 @@ class DesiredFieldConfigurationScheme:
 
 @dataclass(frozen=True)
 class DesiredProject:
-    alias: str        # uses project key
+    alias: str  # uses project key
     key: str
     name: str
     project_type_key: str
     lead: str
     description: str
-    style: str        # "company-managed" or "team-managed"
+    style: str  # "company-managed" or "team-managed"
+    issuetype_scheme: str | None  # alias
     issuetype_screen_scheme: str | None  # alias
     field_configuration_scheme: str | None  # alias
 
@@ -114,6 +127,7 @@ class DesiredSnapshot:
     issuetypes: dict[str, DesiredIssueType] = field(default_factory=dict)
     screens: dict[str, DesiredScreen] = field(default_factory=dict)
     screen_schemes: dict[str, DesiredScreenScheme] = field(default_factory=dict)
+    issuetype_schemes: dict[str, DesiredIssueTypeScheme] = field(default_factory=dict)
     issuetype_screen_schemes: dict[str, DesiredIssueTypeScreenScheme] = field(
         default_factory=dict,
     )
@@ -127,14 +141,26 @@ class DesiredSnapshot:
 
 
 SYSTEM_FIELD_NAMES = {
-    "Summary", "Description", "Reporter", "Assignee",
-    "Priority", "Created", "Updated", "Status", "Resolution",
-    "Labels", "Components", "Fix Version/s", "Affects Version/s",
-    "Due Date", "Environment", "Issue Type",
+    "Summary",
+    "Description",
+    "Reporter",
+    "Assignee",
+    "Priority",
+    "Created",
+    "Updated",
+    "Status",
+    "Resolution",
+    "Labels",
+    "Components",
+    "Fix Version/s",
+    "Affects Version/s",
+    "Due Date",
+    "Environment",
+    "Issue Type",
 }
 
 
-def build_desired_snapshot(registry: "Registry" | None = None) -> DesiredSnapshot:
+def build_desired_snapshot(registry: Registry | None = None) -> DesiredSnapshot:
     """Walk the registry and assemble a complete desired snapshot.
 
     The default registry is the process-wide one populated by class definition.
@@ -167,9 +193,9 @@ def build_desired_snapshot(registry: "Registry" | None = None) -> DesiredSnapsho
         field_refs: list[str] = []
         for ref in scr.fields:
             if isinstance(ref, CustomField):
-                field_refs.append(ref.alias)   # marker: resolve via state at apply time
+                field_refs.append(ref.alias)  # marker: resolve via state at apply time
             else:
-                field_refs.append(str(ref))    # system field
+                field_refs.append(str(ref))  # system field
         desired.screens[alias] = DesiredScreen(
             alias=alias,
             name=scr.name,
@@ -199,14 +225,22 @@ def build_desired_snapshot(registry: "Registry" | None = None) -> DesiredSnapsho
         items: list[DesiredFieldConfigurationItem] = []
         for ref in fc.required:
             field_alias = ref.alias if isinstance(ref, CustomField) else str(ref)
-            items.append(DesiredFieldConfigurationItem(
-                field_alias=field_alias, required=True, hidden=False,
-            ))
+            items.append(
+                DesiredFieldConfigurationItem(
+                    field_alias=field_alias,
+                    required=True,
+                    hidden=False,
+                )
+            )
         for ref in fc.hidden:
             field_alias = ref.alias if isinstance(ref, CustomField) else str(ref)
-            items.append(DesiredFieldConfigurationItem(
-                field_alias=field_alias, required=False, hidden=True,
-            ))
+            items.append(
+                DesiredFieldConfigurationItem(
+                    field_alias=field_alias,
+                    required=False,
+                    hidden=True,
+                )
+            )
         desired.field_configurations[alias] = DesiredFieldConfiguration(
             alias=alias,
             name=fc.name,
@@ -214,9 +248,10 @@ def build_desired_snapshot(registry: "Registry" | None = None) -> DesiredSnapsho
             items=tuple(items),
         )
 
-    # ── Projects + derived ITSS/FCS ──────────────────────────────────
+    # ── Projects + derived IssueTypeScheme / ITSS / FCS ──────────────
     for project_key, proj_cls in reg.projects.items():
         issuetypes = list(getattr(proj_cls, "__issuetypes__", []))
+        its_alias = _derive_its(desired, project_key, issuetypes)
         itss_alias = _derive_itss(desired, project_key, issuetypes)
         fcs_alias = _derive_fcs(desired, project_key, issuetypes)
         desired.projects[project_key] = DesiredProject(
@@ -227,14 +262,45 @@ def build_desired_snapshot(registry: "Registry" | None = None) -> DesiredSnapsho
             lead=getattr(proj_cls, "__lead__", "") or "",
             description=getattr(proj_cls, "__description__", "") or "",
             style=getattr(proj_cls, "__style__", "company-managed"),
+            issuetype_scheme=its_alias,
             issuetype_screen_scheme=itss_alias,
             field_configuration_scheme=fcs_alias,
         )
     return desired
 
 
+def _derive_its(
+    desired: DesiredSnapshot,
+    project_key: str,
+    issuetypes: list,
+) -> str | None:
+    """Synthesize an IssueTypeScheme for the project from its ``__issuetypes__``
+    list. None if the project has no issuetypes (the project will fall through
+    to Jira's default scheme). Default issuetype is the first non-subtask
+    entry (Atlassian requires at least one standard issuetype in a scheme)."""
+    if not issuetypes:
+        return None
+    aliases = [it_cls.__alias__ for it_cls in issuetypes]
+    standard = [it_cls.__alias__ for it_cls in issuetypes if not getattr(it_cls, "__subtask__", False)]
+    if not standard:
+        # Jira rejects schemes with only subtasks; skip derivation and let
+        # the project use Jira's default scheme.
+        return None
+    alias = f"{project_key}_its"
+    desired.issuetype_schemes[alias] = DesiredIssueTypeScheme(
+        alias=alias,
+        name=f"{project_key} Issue Type Scheme",
+        description=f"Auto-derived for project {project_key}",
+        issuetypes=tuple(aliases),
+        default_issuetype=standard[0],
+    )
+    return alias
+
+
 def _derive_itss(
-    desired: DesiredSnapshot, project_key: str, issuetypes: list,
+    desired: DesiredSnapshot,
+    project_key: str,
+    issuetypes: list,
 ) -> str | None:
     """Synthesize an ITSS for the project. None if no issuetype carries a
     screen scheme. Mappings: each issuetype's __screen_scheme__ is its mapping;
@@ -243,7 +309,7 @@ def _derive_itss(
     for it_cls in issuetypes:
         ss = getattr(it_cls, "__screen_scheme__", None)
         if ss is not None:
-            typed.append((getattr(it_cls, "__alias__"), ss.alias))
+            typed.append((it_cls.__alias__, ss.alias))
     if not typed:
         return None
     alias = f"{project_key}_itss"
@@ -260,14 +326,16 @@ def _derive_itss(
 
 
 def _derive_fcs(
-    desired: DesiredSnapshot, project_key: str, issuetypes: list,
+    desired: DesiredSnapshot,
+    project_key: str,
+    issuetypes: list,
 ) -> str | None:
     """Same shape as _derive_itss but for FieldConfiguration."""
     typed: list[tuple[str, str]] = []
     for it_cls in issuetypes:
         fc = getattr(it_cls, "__field_configuration__", None)
         if fc is not None:
-            typed.append((getattr(it_cls, "__alias__"), fc.alias))
+            typed.append((it_cls.__alias__, fc.alias))
     if not typed:
         return None
     alias = f"{project_key}_fcs"

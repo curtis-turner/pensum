@@ -34,7 +34,7 @@ class CustomFieldMapping:
         return _drop_empty({"id": self.id, "options": dict(self.options)})
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "CustomFieldMapping":
+    def from_dict(cls, raw: dict[str, Any]) -> CustomFieldMapping:
         return cls(id=raw["id"], options=dict(raw.get("options", {})))
 
 
@@ -47,7 +47,7 @@ class ScreenMapping:
         return _drop_empty({"id": self.id, "tab_ids": dict(self.tab_ids)})
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "ScreenMapping":
+    def from_dict(cls, raw: dict[str, Any]) -> ScreenMapping:
         return cls(id=raw["id"], tab_ids=dict(raw.get("tab_ids", {})))
 
 
@@ -62,7 +62,7 @@ class SimpleMapping:
         return {"id": self.id}
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "SimpleMapping":
+    def from_dict(cls, raw: dict[str, Any]) -> SimpleMapping:
         return cls(id=raw["id"])
 
 
@@ -72,7 +72,7 @@ class ProjectMapping:
     to ``"company-managed"`` for back-compat with state files written before M7."""
 
     id: str
-    style: str = "company-managed"   # or "team-managed"
+    style: str = "company-managed"  # or "team-managed"
     key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -84,7 +84,7 @@ class ProjectMapping:
         return out
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "ProjectMapping":
+    def from_dict(cls, raw: dict[str, Any]) -> ProjectMapping:
         return cls(
             id=raw["id"],
             style=raw.get("style", "company-managed"),
@@ -100,12 +100,13 @@ class StateFile:
     deployment_type: str = ""
     last_applied: str | None = None
     schema_version: int = SCHEMA_VERSION
-    revision: str | None = None   # current migration revision id, None = base
+    revision: str | None = None  # current migration revision id, None = base
     custom_fields: dict[str, CustomFieldMapping] = field(default_factory=dict)
     issuetypes: dict[str, SimpleMapping] = field(default_factory=dict)
     projects: dict[str, ProjectMapping] = field(default_factory=dict)
     screens: dict[str, ScreenMapping] = field(default_factory=dict)
     screen_schemes: dict[str, SimpleMapping] = field(default_factory=dict)
+    issuetype_schemes: dict[str, SimpleMapping] = field(default_factory=dict)
     issuetype_screen_schemes: dict[str, SimpleMapping] = field(default_factory=dict)
     field_configurations: dict[str, SimpleMapping] = field(default_factory=dict)
     field_configuration_schemes: dict[str, SimpleMapping] = field(default_factory=dict)
@@ -114,22 +115,19 @@ class StateFile:
         return yaml.safe_dump(self._to_dict(), sort_keys=False)
 
     def _to_dict(self) -> dict[str, Any]:
-        mappings = _drop_empty({
-            "custom_fields": {a: m.to_dict() for a, m in self.custom_fields.items()},
-            "issuetypes": {a: m.to_dict() for a, m in self.issuetypes.items()},
-            "projects": {a: m.to_dict() for a, m in self.projects.items()},
-            "screens": {a: m.to_dict() for a, m in self.screens.items()},
-            "screen_schemes": {a: m.to_dict() for a, m in self.screen_schemes.items()},
-            "issuetype_screen_schemes": {
-                a: m.to_dict() for a, m in self.issuetype_screen_schemes.items()
-            },
-            "field_configurations": {
-                a: m.to_dict() for a, m in self.field_configurations.items()
-            },
-            "field_configuration_schemes": {
-                a: m.to_dict() for a, m in self.field_configuration_schemes.items()
-            },
-        })
+        mappings = _drop_empty(
+            {
+                "custom_fields": {a: m.to_dict() for a, m in self.custom_fields.items()},
+                "issuetypes": {a: m.to_dict() for a, m in self.issuetypes.items()},
+                "projects": {a: m.to_dict() for a, m in self.projects.items()},
+                "screens": {a: m.to_dict() for a, m in self.screens.items()},
+                "screen_schemes": {a: m.to_dict() for a, m in self.screen_schemes.items()},
+                "issuetype_schemes": {a: m.to_dict() for a, m in self.issuetype_schemes.items()},
+                "issuetype_screen_schemes": {a: m.to_dict() for a, m in self.issuetype_screen_schemes.items()},
+                "field_configurations": {a: m.to_dict() for a, m in self.field_configurations.items()},
+                "field_configuration_schemes": {a: m.to_dict() for a, m in self.field_configuration_schemes.items()},
+            }
+        )
         return {
             "schema_version": self.schema_version,
             "env": self.env,
@@ -142,7 +140,7 @@ class StateFile:
         }
 
     @classmethod
-    def from_yaml(cls, text: str) -> "StateFile":
+    def from_yaml(cls, text: str) -> StateFile:
         try:
             raw = yaml.safe_load(text)
         except yaml.YAMLError as e:
@@ -151,9 +149,7 @@ class StateFile:
             raise StateFileCorrupt("state file root must be a mapping")
         sv = raw.get("schema_version", SCHEMA_VERSION)
         if sv != SCHEMA_VERSION:
-            raise StateFileCorrupt(
-                f"state file schema_version {sv} not understood; expected {SCHEMA_VERSION}"
-            )
+            raise StateFileCorrupt(f"state file schema_version {sv} not understood; expected {SCHEMA_VERSION}")
         m = raw.get("mappings") or {}
         return cls(
             env=raw["env"],
@@ -163,32 +159,20 @@ class StateFile:
             last_applied=raw.get("last_applied"),
             revision=raw.get("revision"),
             schema_version=sv,
-            custom_fields={
-                a: CustomFieldMapping.from_dict(d) for a, d in (m.get("custom_fields") or {}).items()
-            },
-            issuetypes={
-                a: SimpleMapping.from_dict(d) for a, d in (m.get("issuetypes") or {}).items()
-            },
-            projects={
-                a: ProjectMapping.from_dict(d) for a, d in (m.get("projects") or {}).items()
-            },
-            screens={
-                a: ScreenMapping.from_dict(d) for a, d in (m.get("screens") or {}).items()
-            },
-            screen_schemes={
-                a: SimpleMapping.from_dict(d) for a, d in (m.get("screen_schemes") or {}).items()
-            },
+            custom_fields={a: CustomFieldMapping.from_dict(d) for a, d in (m.get("custom_fields") or {}).items()},
+            issuetypes={a: SimpleMapping.from_dict(d) for a, d in (m.get("issuetypes") or {}).items()},
+            projects={a: ProjectMapping.from_dict(d) for a, d in (m.get("projects") or {}).items()},
+            screens={a: ScreenMapping.from_dict(d) for a, d in (m.get("screens") or {}).items()},
+            screen_schemes={a: SimpleMapping.from_dict(d) for a, d in (m.get("screen_schemes") or {}).items()},
+            issuetype_schemes={a: SimpleMapping.from_dict(d) for a, d in (m.get("issuetype_schemes") or {}).items()},
             issuetype_screen_schemes={
-                a: SimpleMapping.from_dict(d)
-                for a, d in (m.get("issuetype_screen_schemes") or {}).items()
+                a: SimpleMapping.from_dict(d) for a, d in (m.get("issuetype_screen_schemes") or {}).items()
             },
             field_configurations={
-                a: SimpleMapping.from_dict(d)
-                for a, d in (m.get("field_configurations") or {}).items()
+                a: SimpleMapping.from_dict(d) for a, d in (m.get("field_configurations") or {}).items()
             },
             field_configuration_schemes={
-                a: SimpleMapping.from_dict(d)
-                for a, d in (m.get("field_configuration_schemes") or {}).items()
+                a: SimpleMapping.from_dict(d) for a, d in (m.get("field_configuration_schemes") or {}).items()
             },
         )
 
@@ -196,7 +180,7 @@ class StateFile:
         Path(path).write_text(self.to_yaml())
 
     @classmethod
-    def load(cls, path: str | Path) -> "StateFile":
+    def load(cls, path: str | Path) -> StateFile:
         p = Path(path)
         if not p.exists():
             raise StateFileCorrupt(f"state file does not exist: {p}")

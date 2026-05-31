@@ -29,19 +29,29 @@ def _paginated(values):
 
 def _stub_empty_jira(mock):
     """All admin endpoints return empty — Jira has nothing."""
-    mock.get(f"{DC_ROOT}/serverInfo").mock(return_value=httpx.Response(200, json={
-        "baseUrl": BASE, "version": "9", "deploymentType": "Server",
-    }))
+    mock.get(f"{DC_ROOT}/serverInfo").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "baseUrl": BASE,
+                "version": "9",
+                "deploymentType": "Server",
+            },
+        )
+    )
     mock.get(f"{DC_ROOT}/field").mock(return_value=httpx.Response(200, json=[]))
     mock.get(f"{DC_ROOT}/issuetype").mock(return_value=httpx.Response(200, json=[]))
     for path in (
-        "/project/search", "/screens", "/screenscheme",
-        "/issuetypescreenscheme", "/fieldconfiguration",
+        "/project/search",
+        "/screens",
+        "/screenscheme",
+        "/issuetypescheme",
+        "/issuetypescheme/mapping",
+        "/issuetypescreenscheme",
+        "/fieldconfiguration",
         "/fieldconfigurationscheme",
     ):
-        mock.get(f"{DC_ROOT}{path}").mock(
-            return_value=httpx.Response(200, json=_paginated([]))
-        )
+        mock.get(f"{DC_ROOT}{path}").mock(return_value=httpx.Response(200, json=_paginated([])))
 
 
 @respx.mock
@@ -53,17 +63,26 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
     mig_dir = tmp_path / "migrations"
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("PENSUM_TOKEN", "tok")
-    rc = main([
-        "revision",
-        "--migrations-dir", str(mig_dir),
-        "-m", "initial platform schema",
-        "--autogenerate",
-        "--schema", "examples.platform",
-        "--state", str(state_path),
-        "--env", "dev",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "initial platform schema",
+            "--autogenerate",
+            "--schema",
+            "examples.platform",
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "operation(s) emitted" in out
@@ -85,9 +104,11 @@ def test_autogenerate_greenfield_writes_full_migration(tmp_path, monkeypatch, ca
     assert "op.add_screen_tab_field" in source
     assert "op.create_screen_scheme" in source
     assert "op.create_field_configuration" in source
+    assert "op.create_issuetype_scheme" in source
     assert "op.create_issuetype_screen_scheme" in source
     assert "op.create_field_configuration_scheme" in source
     assert "op.create_project" in source
+    assert "op.set_project_issuetype_scheme" in source
     assert "op.set_project_issuetype_screen_scheme" in source
     assert "op.set_project_field_configuration_scheme" in source
     # Downgrade is the standard refusal:
@@ -101,18 +122,27 @@ def test_autogenerate_in_sync_writes_nothing(tmp_path, monkeypatch, capsys):
     mig_dir = tmp_path / "migrations"
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("PENSUM_TOKEN", "tok")
-    rc = main([
-        "revision",
-        "--migrations-dir", str(mig_dir),
-        "-m", "noop",
-        "--autogenerate",
-        # No schema declarations imported (registry empty due to fixture reset).
-        "--schema", "pensum.registry",  # any importable, no schema content
-        "--state", str(state_path),
-        "--env", "dev",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "noop",
+            "--autogenerate",
+            # No schema declarations imported (registry empty due to fixture reset).
+            "--schema",
+            "pensum.registry",  # any importable, no schema content
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
     assert rc == 0
     assert "in sync" in capsys.readouterr().out
     assert not mig_dir.exists() or not list(mig_dir.glob("*.py"))
@@ -120,7 +150,9 @@ def test_autogenerate_in_sync_writes_nothing(tmp_path, monkeypatch, capsys):
 
 @respx.mock
 def test_autogenerate_orphan_state_warns_without_allow_delete(
-    tmp_path, monkeypatch, capsys,
+    tmp_path,
+    monkeypatch,
+    capsys,
 ):
     """State has an alias that schema doesn't declare; without --allow-delete,
     autogenerate emits a warning and (since schema declares nothing else) no file."""
@@ -129,21 +161,31 @@ def test_autogenerate_orphan_state_warns_without_allow_delete(
     state_path = tmp_path / "state.yaml"
     state = StateFile(env="dev", jira_url=BASE)
     from pensum.state.file import CustomFieldMapping
+
     state.custom_fields["orphan"] = CustomFieldMapping(id="customfield_99999")
     state.save(state_path)
 
     monkeypatch.setenv("PENSUM_TOKEN", "tok")
-    rc = main([
-        "revision",
-        "--migrations-dir", str(mig_dir),
-        "-m", "noop",
-        "--autogenerate",
-        "--schema", "pensum.registry",
-        "--state", str(state_path),
-        "--env", "dev",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "noop",
+            "--autogenerate",
+            "--schema",
+            "pensum.registry",
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "warning:" in out
@@ -159,22 +201,32 @@ def test_autogenerate_allow_delete_emits_delete(tmp_path, monkeypatch, capsys):
     state_path = tmp_path / "state.yaml"
     state = StateFile(env="dev", jira_url=BASE)
     from pensum.state.file import CustomFieldMapping
+
     state.custom_fields["orphan"] = CustomFieldMapping(id="customfield_99999")
     state.save(state_path)
 
     monkeypatch.setenv("PENSUM_TOKEN", "tok")
-    rc = main([
-        "revision",
-        "--migrations-dir", str(mig_dir),
-        "-m", "drop orphan",
-        "--autogenerate",
-        "--schema", "pensum.registry",
-        "--state", str(state_path),
-        "--env", "dev",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-        "--allow-delete",
-    ])
+    rc = main(
+        [
+            "revision",
+            "--migrations-dir",
+            str(mig_dir),
+            "-m",
+            "drop orphan",
+            "--autogenerate",
+            "--schema",
+            "pensum.registry",
+            "--state",
+            str(state_path),
+            "--env",
+            "dev",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+            "--allow-delete",
+        ]
+    )
     assert rc == 0
     files = list(mig_dir.glob("*.py"))
     assert len(files) == 1

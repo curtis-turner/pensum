@@ -50,6 +50,8 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = DC_ROOT) -> None:
     mock.get(f"{root}/project/search").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/screens").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/screenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{root}/issuetypescheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{root}/issuetypescheme/mapping").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/issuetypescreenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/fieldconfiguration").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
@@ -461,3 +463,46 @@ async def test_reflect_skips_screens_whose_tabs_endpoint_returns_400():
         async with _dc_engine() as eng:
             snap = await eng.reflect()
     assert set(snap.screens) == {"1"}
+
+
+# ── reflect(): issuetype schemes ─────────────────────────────────────
+@pytest.mark.asyncio
+@respx.mock
+async def test_reflect_captures_issuetype_schemes_with_members():
+    """IssueTypeScheme reflect: members come from /issuetypescheme/mapping
+    filtered to the scheme id. Members are kept ordered."""
+    _stub_empty_admin(respx.mock)
+    respx.get(f"{DC_ROOT}/issuetypescheme").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {
+                        "id": "10200",
+                        "name": "PLAT Issue Type Scheme",
+                        "description": "Auto-derived",
+                        "defaultIssueTypeId": "10100",
+                        "isDefault": False,
+                    },
+                ]
+            ),
+        )
+    )
+    respx.get(f"{DC_ROOT}/issuetypescheme/mapping").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {"issueTypeSchemeId": "10200", "issueTypeId": "10100"},
+                    {"issueTypeSchemeId": "10200", "issueTypeId": "10101"},
+                    {"issueTypeSchemeId": "99999", "issueTypeId": "20000"},  # other scheme, ignored
+                ]
+            ),
+        )
+    )
+    async with _dc_engine() as eng:
+        snap = await eng.reflect()
+    its = snap.issuetype_schemes["10200"]
+    assert its.name == "PLAT Issue Type Scheme"
+    assert its.default_issuetype_id == "10100"
+    assert its.issuetype_ids == ("10100", "10101")

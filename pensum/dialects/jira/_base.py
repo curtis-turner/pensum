@@ -16,6 +16,7 @@ from pensum.state.snapshot import (
     FieldConfigurationItemSnapshot,
     FieldConfigurationSchemeSnapshot,
     FieldConfigurationSnapshot,
+    IssueTypeSchemeSnapshot,
     IssueTypeScreenSchemeSnapshot,
     IssueTypeSnapshot,
     ProjectSnapshot,
@@ -61,6 +62,7 @@ class JiraDialectBase:
         projects = await self._reflect_projects()
         screens = await self._reflect_screens()
         screen_schemes = await self._reflect_screen_schemes()
+        its = await self._reflect_issuetype_schemes()
         itss = await self._reflect_issuetype_screen_schemes()
         field_configurations = await self._reflect_field_configurations()
         fcs = await self._reflect_field_configuration_schemes()
@@ -71,6 +73,7 @@ class JiraDialectBase:
             projects=projects,
             screens=screens,
             screen_schemes=screen_schemes,
+            issuetype_schemes=its,
             issuetype_screen_schemes=itss,
             field_configurations=field_configurations,
             field_configuration_schemes=fcs,
@@ -197,6 +200,42 @@ class JiraDialectBase:
             extra_params={"issueTypeScreenSchemeId": scheme_id},
         ):
             out.append(common.parse_itss_mapping(entry))
+        return out
+
+    # ── Issue type schemes ───────────────────────────────────────────
+    async def _reflect_issuetype_schemes(self) -> dict[str, IssueTypeSchemeSnapshot]:
+        """Reflect global IssueTypeSchemes and their member issuetypes.
+
+        Cloud serves the scheme list at /issuetypescheme and the per-scheme
+        member list at /issuetypescheme/mapping (paginated, filterable by
+        scheme id). DC has the list endpoint but not /mapping, so on DC the
+        members come from a different path — overridden in dialect subclasses
+        if needed.
+        """
+        result: dict[str, IssueTypeSchemeSnapshot] = {}
+        async for entry in common.paginate(self.client, f"{self.api_root}/issuetypescheme"):
+            header = common.parse_issuetype_scheme_header(entry)
+            member_ids = await self._reflect_issuetype_scheme_members(header.id)
+            result[header.id] = IssueTypeSchemeSnapshot(
+                id=header.id,
+                name=header.name,
+                description=header.description,
+                issuetype_ids=tuple(member_ids),
+                default_issuetype_id=header.default_issuetype_id,
+            )
+        return result
+
+    async def _reflect_issuetype_scheme_members(self, scheme_id: str) -> list[str]:
+        """Cloud: list issuetype IDs belonging to a scheme via /issuetypescheme/mapping."""
+        out: list[str] = []
+        async for entry in common.paginate(
+            self.client,
+            f"{self.api_root}/issuetypescheme/mapping",
+            extra_params={"issueTypeSchemeId": scheme_id},
+        ):
+            row_scheme_id, row_issuetype_id = common.parse_issuetype_scheme_mapping(entry)
+            if row_scheme_id == scheme_id and row_issuetype_id:
+                out.append(row_issuetype_id)
         return out
 
     # ── Field configurations ─────────────────────────────────────────
@@ -466,6 +505,66 @@ class JiraDialectBase:
         await self.client.put_json(
             f"{self.api_root}/issuetypescreenscheme/project",
             json={"issueTypeScreenSchemeId": scheme_id, "projectId": project_id},
+        )
+
+    # ── Issue type schemes ───────────────────────────────────────────
+    async def create_issuetype_scheme(
+        self,
+        *,
+        name: str,
+        issuetype_ids: list[str],
+        default_issuetype_id: str,
+        description: str = "",
+    ) -> str:
+        """Create an IssueTypeScheme. ``issuetype_ids`` must contain at least
+        one standard (non-subtask) issuetype id, and ``default_issuetype_id``
+        must be in that list. Jira enforces both constraints."""
+        body: dict[str, Any] = {
+            "name": name,
+            "description": description,
+            "issueTypeIds": list(issuetype_ids),
+            "defaultIssueTypeId": default_issuetype_id,
+        }
+        result = await self.client.post_json(
+            f"{self.api_root}/issuetypescheme",
+            json=body,
+        )
+        return _expect_id(result, f"POST {self.api_root}/issuetypescheme")
+
+    async def update_issuetype_scheme(
+        self,
+        scheme_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        default_issuetype_id: str | None = None,
+    ) -> None:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if default_issuetype_id is not None:
+            body["defaultIssueTypeId"] = default_issuetype_id
+        if not body:
+            return
+        await self.client.put_json(
+            f"{self.api_root}/issuetypescheme/{scheme_id}",
+            json=body,
+        )
+
+    async def delete_issuetype_scheme(self, scheme_id: str) -> None:
+        await self.client.delete(f"{self.api_root}/issuetypescheme/{scheme_id}")
+
+    async def set_project_issuetype_scheme(
+        self,
+        *,
+        project_id: str,
+        scheme_id: str,
+    ) -> None:
+        await self.client.put_json(
+            f"{self.api_root}/issuetypescheme/project",
+            json={"issueTypeSchemeId": scheme_id, "projectId": project_id},
         )
 
     # ── Field configurations ─────────────────────────────────────────

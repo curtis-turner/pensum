@@ -14,18 +14,18 @@ from dataclasses import dataclass, field
 class ServerInfoSnapshot:
     """Subset of `GET /rest/api/{2,3}/serverInfo` that pensum cares about."""
 
-    deployment_type: str   # "Server" (DC) or "Cloud"
-    version: str           # e.g. "9.12.4" or a Cloud build string
-    base_url: str          # the server-reported base URL
+    deployment_type: str  # "Server" (DC) or "Cloud"
+    version: str  # e.g. "9.12.4" or a Cloud build string
+    base_url: str  # the server-reported base URL
 
 
 @dataclass(frozen=True)
 class CustomFieldSnapshot:
     """One Jira custom field, with its options if it is a select-style type."""
 
-    id: str                            # e.g. "customfield_10042"
-    name: str                          # display name in Jira
-    type_id: str                       # e.g. "...customfieldtypes:select"
+    id: str  # e.g. "customfield_10042"
+    name: str  # display name in Jira
+    type_id: str  # e.g. "...customfieldtypes:select"
     options: dict[str, str] = field(default_factory=dict)  # option name -> option id
 
 
@@ -48,11 +48,12 @@ class ProjectSnapshot:
     key: str
     name: str
     lead: str | None = None
-    project_type_key: str = ""           # e.g. "software", "business"
-    style: str = "classic"               # "classic" or "next-gen"
+    project_type_key: str = ""  # e.g. "software", "business"
+    style: str = "classic"  # "classic" or "next-gen"
     # Resolved separately via /project/{key}/issuetypescreenscheme and
     # /project/{key}/fieldconfigurationscheme. Empty on TMP and on projects
     # using the global defaults.
+    issuetype_scheme_id: str | None = None
     issuetype_screen_scheme_id: str | None = None
     field_configuration_scheme_id: str | None = None
 
@@ -87,7 +88,7 @@ class ScreenSchemeSnapshot:
 
 @dataclass(frozen=True)
 class IssueTypeScreenSchemeMappingSnapshot:
-    issuetype_id: str   # numeric issuetype id, or "default" for the fallback
+    issuetype_id: str  # numeric issuetype id, or "default" for the fallback
     screen_scheme_id: str
 
 
@@ -129,6 +130,20 @@ class FieldConfigurationSchemeSnapshot:
     mappings: tuple[FieldConfigurationSchemeMappingSnapshot, ...] = ()
 
 
+@dataclass(frozen=True)
+class IssueTypeSchemeSnapshot:
+    """A Jira IssueTypeScheme: the set of issuetypes available within a
+    project. Project ← IssueTypeScheme binding is reflected onto
+    ``ProjectSnapshot.issuetype_scheme_id``.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    issuetype_ids: tuple[str, ...] = ()  # ordered Jira issuetype IDs
+    default_issuetype_id: str | None = None
+
+
 @dataclass
 class Snapshot:
     """Full reflected state of a Jira instance (subset pensum manages)."""
@@ -136,9 +151,10 @@ class Snapshot:
     server_info: ServerInfoSnapshot
     custom_fields: dict[str, CustomFieldSnapshot] = field(default_factory=dict)
     issuetypes: dict[str, IssueTypeSnapshot] = field(default_factory=dict)
-    projects: dict[str, ProjectSnapshot] = field(default_factory=dict)        # keyed by project key
+    projects: dict[str, ProjectSnapshot] = field(default_factory=dict)  # keyed by project key
     screens: dict[str, ScreenSnapshot] = field(default_factory=dict)
     screen_schemes: dict[str, ScreenSchemeSnapshot] = field(default_factory=dict)
+    issuetype_schemes: dict[str, IssueTypeSchemeSnapshot] = field(default_factory=dict)
     issuetype_screen_schemes: dict[str, IssueTypeScreenSchemeSnapshot] = field(default_factory=dict)
     field_configurations: dict[str, FieldConfigurationSnapshot] = field(default_factory=dict)
     field_configuration_schemes: dict[str, FieldConfigurationSchemeSnapshot] = field(default_factory=dict)

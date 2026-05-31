@@ -19,18 +19,29 @@ def _paginated(values: list[Any]) -> dict[str, Any]:
 
 def _stub_empty(mock: respx.MockRouter) -> None:
     mock.get(f"{DC_ROOT}/serverInfo").mock(
-        return_value=httpx.Response(200, json={
-            "baseUrl": BASE, "version": "9.12.4", "deploymentType": "Server",
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "baseUrl": BASE,
+                "version": "9.12.4",
+                "deploymentType": "Server",
+            },
+        )
     )
     for path in (
-        f"{DC_ROOT}/field", f"{DC_ROOT}/issuetype",
+        f"{DC_ROOT}/field",
+        f"{DC_ROOT}/issuetype",
     ):
         mock.get(path).mock(return_value=httpx.Response(200, json=[]))
     for path in (
-        f"{DC_ROOT}/project/search", f"{DC_ROOT}/screens",
-        f"{DC_ROOT}/screenscheme", f"{DC_ROOT}/issuetypescreenscheme",
-        f"{DC_ROOT}/fieldconfiguration", f"{DC_ROOT}/fieldconfigurationscheme",
+        f"{DC_ROOT}/project/search",
+        f"{DC_ROOT}/screens",
+        f"{DC_ROOT}/screenscheme",
+        f"{DC_ROOT}/issuetypescheme",
+        f"{DC_ROOT}/issuetypescheme/mapping",
+        f"{DC_ROOT}/issuetypescreenscheme",
+        f"{DC_ROOT}/fieldconfiguration",
+        f"{DC_ROOT}/fieldconfigurationscheme",
     ):
         mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
 
@@ -39,11 +50,15 @@ def _stub_empty(mock: respx.MockRouter) -> None:
 def test_reflect_yaml_output(monkeypatch, capsys):
     _stub_empty(respx.mock)
     monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
-    rc = main([
-        "reflect",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-    ])
+    rc = main(
+        [
+            "reflect",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     parsed = yaml.safe_load(out)
@@ -57,14 +72,20 @@ def test_reflect_yaml_output(monkeypatch, capsys):
 def test_reflect_json_output(monkeypatch, capsys):
     _stub_empty(respx.mock)
     monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
-    rc = main([
-        "reflect",
-        "--url", f"jira_dc+{BASE}",
-        "--auth", "pat",
-        "--format", "json",
-    ])
+    rc = main(
+        [
+            "reflect",
+            "--url",
+            f"jira_dc+{BASE}",
+            "--auth",
+            "pat",
+            "--format",
+            "json",
+        ]
+    )
     assert rc == 0
     import json as _json
+
     parsed = _json.loads(capsys.readouterr().out)
     assert parsed["server_info"]["deployment_type"] == "Server"
 
@@ -72,11 +93,15 @@ def test_reflect_json_output(monkeypatch, capsys):
 def test_reflect_missing_pat_env_exits(monkeypatch):
     monkeypatch.delenv("PENSUM_TOKEN", raising=False)
     with pytest.raises(SystemExit) as exc:
-        main([
-            "reflect",
-            "--url", f"jira_dc+{BASE}",
-            "--auth", "pat",
-        ])
+        main(
+            [
+                "reflect",
+                "--url",
+                f"jira_dc+{BASE}",
+                "--auth",
+                "pat",
+            ]
+        )
     assert "PENSUM_TOKEN" in str(exc.value)
 
 
@@ -84,23 +109,32 @@ def test_reflect_missing_basic_auth_exits(monkeypatch):
     monkeypatch.delenv("PENSUM_TOKEN", raising=False)
     monkeypatch.delenv("PENSUM_USER", raising=False)
     with pytest.raises(SystemExit):
-        main([
-            "reflect",
-            "--url", f"jira_dc+{BASE}",
-            "--auth", "basic",
-        ])
+        main(
+            [
+                "reflect",
+                "--url",
+                f"jira_dc+{BASE}",
+                "--auth",
+                "basic",
+            ]
+        )
 
 
 @respx.mock
 def test_reflect_dialect_kwarg_without_url_prefix(monkeypatch, capsys):
     _stub_empty(respx.mock)
     monkeypatch.setenv("PENSUM_TOKEN", "test-pat")
-    rc = main([
-        "reflect",
-        "--url", BASE,
-        "--dialect", "jira_dc",
-        "--auth", "pat",
-    ])
+    rc = main(
+        [
+            "reflect",
+            "--url",
+            BASE,
+            "--dialect",
+            "jira_dc",
+            "--auth",
+            "pat",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "Server" in out
@@ -120,6 +154,7 @@ def test_current_with_no_state_file(tmp_path, capsys):
 
 def test_current_reads_revision_from_state_file(tmp_path, capsys):
     from pensum import StateFile
+
     sf = StateFile(env="dev", jira_url="https://x", revision="abc12345")
     p = tmp_path / "state.yaml"
     sf.save(p)
@@ -130,6 +165,7 @@ def test_current_reads_revision_from_state_file(tmp_path, capsys):
 
 def test_history_lists_migrations_in_order(capsys):
     from pathlib import Path
+
     fixtures = str(Path(__file__).parent / "fixtures" / "migrations")
     rc = main(["history", "--migrations-dir", fixtures])
     assert rc == 0
