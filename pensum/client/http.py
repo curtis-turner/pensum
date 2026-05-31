@@ -23,7 +23,6 @@ from pensum.exceptions import (
     TransportError,
 )
 
-
 RETRYABLE_STATUSES = (429, 503)
 
 
@@ -53,19 +52,13 @@ class JiraHTTPClient:
         self._backoff_base = backoff_base
 
     async def get_json(self, path: str, **kwargs: Any) -> Any:
-        return self._unwrap(
-            await self._send_with_retry("GET", path, **kwargs)
-        )
+        return self._unwrap(await self._send_with_retry("GET", path, **kwargs))
 
     async def post_json(self, path: str, *, json: Any, **kwargs: Any) -> Any:
-        return self._unwrap(
-            await self._send_with_retry("POST", path, json=json, **kwargs)
-        )
+        return self._unwrap(await self._send_with_retry("POST", path, json=json, **kwargs))
 
     async def put_json(self, path: str, *, json: Any, **kwargs: Any) -> Any:
-        return self._unwrap(
-            await self._send_with_retry("PUT", path, json=json, **kwargs)
-        )
+        return self._unwrap(await self._send_with_retry("PUT", path, json=json, **kwargs))
 
     async def delete(self, path: str, **kwargs: Any) -> None:
         self._unwrap(
@@ -74,7 +67,10 @@ class JiraHTTPClient:
         )
 
     async def _send_with_retry(
-        self, method: str, path: str, **kwargs: Any,
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
     ) -> httpx.Response:
         """Issue the request, retrying on 429/503 up to max_retries."""
         attempt = 0
@@ -96,12 +92,12 @@ class JiraHTTPClient:
                 return float(ra)
             except ValueError:
                 pass  # HTTP-date format unsupported; fall through
-        return self._backoff_base * (2 ** attempt) + random.uniform(0, 0.1)
+        return self._backoff_base * (2**attempt) + random.uniform(0, 0.1)
 
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def __aenter__(self) -> "JiraHTTPClient":
+    async def __aenter__(self) -> JiraHTTPClient:
         return self
 
     async def __aexit__(self, *_: object) -> None:
@@ -119,9 +115,15 @@ class JiraHTTPClient:
         if status == 404:
             raise NotFoundError(f"404 from {response.request.url}")
         if 500 <= status < 600:
-            raise TransportError(f"{status} from {response.request.url}: {response.text[:200]}")
+            raise TransportError(
+                f"{status} from {response.request.url}: {response.text[:200]}",
+                status_code=status,
+            )
         if status >= 400:
-            raise TransportError(f"{status} from {response.request.url}: {response.text[:200]}")
+            raise TransportError(
+                f"{status} from {response.request.url}: {response.text[:200]}",
+                status_code=status,
+            )
         if not expect_json:
             return None
         if not response.content:

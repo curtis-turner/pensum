@@ -5,11 +5,12 @@ contexts; DC hits /option directly).
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, ClassVar
 
 from pensum.client.http import JiraHTTPClient
 from pensum.dialects.jira import common
-from pensum.exceptions import ReflectionError
+from pensum.exceptions import ReflectionError, TransportError
 from pensum.state.snapshot import (
     CustomFieldSnapshot,
     FieldConfigurationItemSnapshot,
@@ -32,6 +33,9 @@ class JiraDialectBase:
     name: ClassVar[str] = "jira_base"
     api_root: ClassVar[str] = "/rest/api/2"
     expected_deployment_type: ClassVar[str] = "Server"
+    # DC exposes field-configuration items at /fieldconfiguration/{id}/items;
+    # Cloud serves the same data at /fieldconfiguration/{id}/fields.
+    field_config_items_segment: ClassVar[str] = "items"
 
     def __init__(self, client: JiraHTTPClient) -> None:
         self.client = client
@@ -85,7 +89,10 @@ class JiraDialectBase:
             if common.is_select_style(cf.type_id):
                 options = await self._reflect_field_options(cf.id)
                 cf = CustomFieldSnapshot(
-                    id=cf.id, name=cf.name, type_id=cf.type_id, options=options,
+                    id=cf.id,
+                    name=cf.name,
+                    type_id=cf.type_id,
+                    options=options,
                 )
             result[cf.id] = cf
         return result
@@ -121,7 +128,22 @@ class JiraDialectBase:
         screens: dict[str, ScreenSnapshot] = {}
         async for entry in common.paginate(self.client, f"{self.api_root}/screens"):
             header = common.parse_screen_header(entry)
-            tabs = await self._reflect_screen_tabs(header.id)
+            try:
+                tabs = await self._reflect_screen_tabs(header.id)
+            except TransportError as e:
+                # Cloud tenants with team-managed projects expose synthetic
+                # screens in /screens whose /tabs endpoint returns 400
+                # "Screen with id N does not exist". TMP does not use the
+                # screens system; skip and warn.
+                if e.status_code == 400:
+                    warnings.warn(
+                        f"skipping screen {header.id} ({header.name!r}): "
+                        f"tabs lookup returned 400. Likely a team-managed "
+                        f"project's synthetic screen.",
+                        stacklevel=2,
+                    )
+                    continue
+                raise
             screens[header.id] = ScreenSnapshot(
                 id=header.id,
                 name=header.name,
@@ -133,19 +155,13 @@ class JiraDialectBase:
     async def _reflect_screen_tabs(self, screen_id: str) -> list[ScreenTabSnapshot]:
         raw_tabs = await self.client.get_json(f"{self.api_root}/screens/{screen_id}/tabs")
         if not isinstance(raw_tabs, list):
-            raise ReflectionError(
-                f"{self.api_root}/screens/{screen_id}/tabs returned non-list"
-            )
+            raise ReflectionError(f"{self.api_root}/screens/{screen_id}/tabs returned non-list")
         out: list[ScreenTabSnapshot] = []
         for tab in raw_tabs:
             tab_id = str(tab.get("id", ""))
-            raw_fields = await self.client.get_json(
-                f"{self.api_root}/screens/{screen_id}/tabs/{tab_id}/fields"
-            )
+            raw_fields = await self.client.get_json(f"{self.api_root}/screens/{screen_id}/tabs/{tab_id}/fields")
             if not isinstance(raw_fields, list):
-                raise ReflectionError(
-                    f"tab {tab_id} on screen {screen_id} returned non-list fields"
-                )
+                raise ReflectionError(f"tab {tab_id} on screen {screen_id} returned non-list fields")
             out.append(common.parse_screen_tab(tab, raw_fields))
         return out
 
@@ -197,13 +213,11 @@ class JiraDialectBase:
             )
         return result
 
-    async def _reflect_field_configuration_items(
-        self, fc_id: str
-    ) -> dict[str, FieldConfigurationItemSnapshot]:
+    async def _reflect_field_configuration_items(self, fc_id: str) -> dict[str, FieldConfigurationItemSnapshot]:
         items: dict[str, FieldConfigurationItemSnapshot] = {}
         async for entry in common.paginate(
             self.client,
-            f"{self.api_root}/fieldconfiguration/{fc_id}/items",
+            f"{self.api_root}/fieldconfiguration/{fc_id}/{self.field_config_items_segment}",
         ):
             item = common.parse_field_configuration_item(entry)
             if item.field_id:
@@ -215,9 +229,7 @@ class JiraDialectBase:
         self,
     ) -> dict[str, FieldConfigurationSchemeSnapshot]:
         result: dict[str, FieldConfigurationSchemeSnapshot] = {}
-        async for entry in common.paginate(
-            self.client, f"{self.api_root}/fieldconfigurationscheme"
-        ):
+        async for entry in common.paginate(self.client, f"{self.api_root}/fieldconfigurationscheme"):
             header = common.parse_fcs_header(entry)
             mappings = await self._reflect_fcs_mappings(header.id)
             result[header.id] = FieldConfigurationSchemeSnapshot(
@@ -270,17 +282,18 @@ class JiraDialectBase:
             json={"value": value},
         )
         if not isinstance(result, dict) or "id" not in result:
-            raise ReflectionError(
-                f"POST /field/{field_id}/option returned no id: {result!r}"
-            )
+            raise ReflectionError(f"POST /field/{field_id}/option returned no id: {result!r}")
         return str(result["id"])
 
     async def delete_custom_field(self, field_id: str) -> None:
         await self.client.delete(f"{self.api_root}/field/{field_id}")
 
     async def update_custom_field(
-        self, field_id: str, *,
-        name: str | None = None, description: str | None = None,
+        self,
+        field_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
         searcher_key: str | None = None,
     ) -> None:
         body: dict[str, Any] = {}
@@ -295,12 +308,12 @@ class JiraDialectBase:
         await self.client.put_json(f"{self.api_root}/field/{field_id}", json=body)
 
     async def delete_custom_field_option(
-        self, field_id: str, option_id: str,
+        self,
+        field_id: str,
+        option_id: str,
     ) -> None:
         """DC: DELETE /field/{id}/option/{optId}. Cloud overrides."""
-        await self.client.delete(
-            f"{self.api_root}/field/{field_id}/option/{option_id}"
-        )
+        await self.client.delete(f"{self.api_root}/field/{field_id}/option/{option_id}")
 
     # ── Screens ──────────────────────────────────────────────────────
     async def create_screen(self, *, name: str, description: str = "") -> str:
@@ -312,8 +325,11 @@ class JiraDialectBase:
         await self.client.delete(f"{self.api_root}/screens/{screen_id}")
 
     async def update_screen(
-        self, screen_id: str, *,
-        name: str | None = None, description: str | None = None,
+        self,
+        screen_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
     ) -> None:
         body: dict[str, Any] = {}
         if name is not None:
@@ -326,12 +342,17 @@ class JiraDialectBase:
 
     async def add_screen_tab(self, screen_id: str, *, name: str) -> str:
         result = await self.client.post_json(
-            f"{self.api_root}/screens/{screen_id}/tabs", json={"name": name},
+            f"{self.api_root}/screens/{screen_id}/tabs",
+            json={"name": name},
         )
         return _expect_id(result, f"POST /screens/{screen_id}/tabs")
 
     async def add_screen_tab_field(
-        self, screen_id: str, tab_id: str, *, field_id: str,
+        self,
+        screen_id: str,
+        tab_id: str,
+        *,
+        field_id: str,
     ) -> None:
         await self.client.post_json(
             f"{self.api_root}/screens/{screen_id}/tabs/{tab_id}/fields",
@@ -340,10 +361,16 @@ class JiraDialectBase:
 
     # ── Screen schemes ───────────────────────────────────────────────
     async def create_screen_scheme(
-        self, *, name: str, description: str, screens: dict[str, str],
+        self,
+        *,
+        name: str,
+        description: str,
+        screens: dict[str, str],
     ) -> str:
         body: dict[str, Any] = {
-            "name": name, "description": description, "screens": screens,
+            "name": name,
+            "description": description,
+            "screens": screens,
         }
         result = await self.client.post_json(f"{self.api_root}/screenscheme", json=body)
         return _expect_id(result, f"POST {self.api_root}/screenscheme")
@@ -352,8 +379,11 @@ class JiraDialectBase:
         await self.client.delete(f"{self.api_root}/screenscheme/{scheme_id}")
 
     async def update_screen_scheme(
-        self, scheme_id: str, *,
-        name: str | None = None, description: str | None = None,
+        self,
+        scheme_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
         screens: dict[str, str] | None = None,
     ) -> None:
         body: dict[str, Any] = {}
@@ -366,12 +396,17 @@ class JiraDialectBase:
         if not body:
             return
         await self.client.put_json(
-            f"{self.api_root}/screenscheme/{scheme_id}", json=body,
+            f"{self.api_root}/screenscheme/{scheme_id}",
+            json=body,
         )
 
     # ── Issue-type screen schemes ────────────────────────────────────
     async def create_issuetype_screen_scheme(
-        self, *, name: str, description: str, mappings: list[dict[str, str]],
+        self,
+        *,
+        name: str,
+        description: str,
+        mappings: list[dict[str, str]],
     ) -> str:
         """mappings: [{"issueTypeId": "...", "screenSchemeId": "..."}, ...].
 
@@ -383,7 +418,8 @@ class JiraDialectBase:
             "issueTypeMappings": mappings,
         }
         result = await self.client.post_json(
-            f"{self.api_root}/issuetypescreenscheme", json=body,
+            f"{self.api_root}/issuetypescreenscheme",
+            json=body,
         )
         return _expect_id(result, f"POST {self.api_root}/issuetypescreenscheme")
 
@@ -391,8 +427,11 @@ class JiraDialectBase:
         await self.client.delete(f"{self.api_root}/issuetypescreenscheme/{scheme_id}")
 
     async def update_issuetype_screen_scheme(
-        self, scheme_id: str, *,
-        name: str | None = None, description: str | None = None,
+        self,
+        scheme_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
     ) -> None:
         body: dict[str, Any] = {}
         if name is not None:
@@ -402,11 +441,15 @@ class JiraDialectBase:
         if not body:
             return
         await self.client.put_json(
-            f"{self.api_root}/issuetypescreenscheme/{scheme_id}", json=body,
+            f"{self.api_root}/issuetypescreenscheme/{scheme_id}",
+            json=body,
         )
 
     async def set_issuetype_screen_scheme_mappings(
-        self, scheme_id: str, *, mappings: list[dict[str, str]],
+        self,
+        scheme_id: str,
+        *,
+        mappings: list[dict[str, str]],
     ) -> None:
         """Replace ITSS mappings. mappings: [{"issueTypeId": "...", "screenSchemeId": "..."}, ...]."""
         await self.client.put_json(
@@ -415,7 +458,10 @@ class JiraDialectBase:
         )
 
     async def set_project_issuetype_screen_scheme(
-        self, *, project_id: str, scheme_id: str,
+        self,
+        *,
+        project_id: str,
+        scheme_id: str,
     ) -> None:
         await self.client.put_json(
             f"{self.api_root}/issuetypescreenscheme/project",
@@ -424,11 +470,15 @@ class JiraDialectBase:
 
     # ── Field configurations ─────────────────────────────────────────
     async def create_field_configuration(
-        self, *, name: str, description: str = "",
+        self,
+        *,
+        name: str,
+        description: str = "",
     ) -> str:
         body: dict[str, Any] = {"name": name, "description": description}
         result = await self.client.post_json(
-            f"{self.api_root}/fieldconfiguration", json=body,
+            f"{self.api_root}/fieldconfiguration",
+            json=body,
         )
         return _expect_id(result, f"POST {self.api_root}/fieldconfiguration")
 
@@ -436,26 +486,39 @@ class JiraDialectBase:
         await self.client.delete(f"{self.api_root}/fieldconfiguration/{fc_id}")
 
     async def set_field_configuration_item(
-        self, fc_id: str, *, field_id: str,
-        required: bool = False, hidden: bool = False, description: str = "",
+        self,
+        fc_id: str,
+        *,
+        field_id: str,
+        required: bool = False,
+        hidden: bool = False,
+        description: str = "",
     ) -> None:
         await self.client.put_json(
             f"{self.api_root}/fieldconfiguration/{fc_id}/fields",
-            json={"fieldConfigurationItems": [{
-                "id": field_id,
-                "isRequired": required,
-                "isHidden": hidden,
-                "description": description,
-            }]},
+            json={
+                "fieldConfigurationItems": [
+                    {
+                        "id": field_id,
+                        "isRequired": required,
+                        "isHidden": hidden,
+                        "description": description,
+                    }
+                ]
+            },
         )
 
     # ── Field configuration schemes ──────────────────────────────────
     async def create_field_configuration_scheme(
-        self, *, name: str, description: str = "",
+        self,
+        *,
+        name: str,
+        description: str = "",
     ) -> str:
         body: dict[str, Any] = {"name": name, "description": description}
         result = await self.client.post_json(
-            f"{self.api_root}/fieldconfigurationscheme", json=body,
+            f"{self.api_root}/fieldconfigurationscheme",
+            json=body,
         )
         return _expect_id(result, f"POST {self.api_root}/fieldconfigurationscheme")
 
@@ -463,8 +526,11 @@ class JiraDialectBase:
         await self.client.delete(f"{self.api_root}/fieldconfigurationscheme/{scheme_id}")
 
     async def update_field_configuration_scheme(
-        self, scheme_id: str, *,
-        name: str | None = None, description: str | None = None,
+        self,
+        scheme_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
     ) -> None:
         body: dict[str, Any] = {}
         if name is not None:
@@ -474,11 +540,15 @@ class JiraDialectBase:
         if not body:
             return
         await self.client.put_json(
-            f"{self.api_root}/fieldconfigurationscheme/{scheme_id}", json=body,
+            f"{self.api_root}/fieldconfigurationscheme/{scheme_id}",
+            json=body,
         )
 
     async def set_field_configuration_scheme_mappings(
-        self, scheme_id: str, *, mappings: list[dict[str, str]],
+        self,
+        scheme_id: str,
+        *,
+        mappings: list[dict[str, str]],
     ) -> None:
         """mappings: [{"issueTypeId": "...", "fieldConfigurationId": "..."}, ...].
 
@@ -490,7 +560,10 @@ class JiraDialectBase:
         )
 
     async def set_project_field_configuration_scheme(
-        self, *, project_id: str, scheme_id: str,
+        self,
+        *,
+        project_id: str,
+        scheme_id: str,
     ) -> None:
         await self.client.put_json(
             f"{self.api_root}/fieldconfigurationscheme/project",
@@ -499,7 +572,11 @@ class JiraDialectBase:
 
     # ── Issue types ──────────────────────────────────────────────────
     async def create_issuetype(
-        self, *, name: str, description: str = "", subtask: bool = False,
+        self,
+        *,
+        name: str,
+        description: str = "",
+        subtask: bool = False,
     ) -> str:
         body: dict[str, Any] = {
             "name": name,
@@ -513,8 +590,11 @@ class JiraDialectBase:
         await self.client.delete(f"{self.api_root}/issuetype/{issuetype_id}")
 
     async def update_issuetype(
-        self, issuetype_id: str, *,
-        name: str | None = None, description: str | None = None,
+        self,
+        issuetype_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
     ) -> None:
         body: dict[str, Any] = {}
         if name is not None:
@@ -524,7 +604,8 @@ class JiraDialectBase:
         if not body:
             return
         await self.client.put_json(
-            f"{self.api_root}/issuetype/{issuetype_id}", json=body,
+            f"{self.api_root}/issuetype/{issuetype_id}",
+            json=body,
         )
 
     # ── Projects ─────────────────────────────────────────────────────
@@ -574,13 +655,17 @@ class JiraDialectBase:
         if not body:
             return
         await self.client.put_json(
-            f"{self.api_root}/project/{project_id}", json=body,
+            f"{self.api_root}/project/{project_id}",
+            json=body,
         )
-
 
     # ── Search (M5 data plane) ───────────────────────────────────────
     async def search(
-        self, *, jql: str, fields: list[str], page_size: int = 50,
+        self,
+        *,
+        jql: str,
+        fields: list[str],
+        page_size: int = 50,
     ):
         """Yield issue payloads matching `jql`. DC: legacy GET /search.
 
@@ -596,7 +681,8 @@ class JiraDialectBase:
                 "maxResults": page_size,
             }
             body = await self.client.get_json(
-                f"{self.api_root}/search", params=params,
+                f"{self.api_root}/search",
+                params=params,
             )
             issues = body.get("issues", []) if isinstance(body, dict) else []
             for issue in issues:
@@ -612,7 +698,8 @@ class JiraDialectBase:
         """Fetch one issue by key. Used by session.get(Model, key)."""
         params = {"fields": ",".join(fields) if fields else "*all"}
         return await self.client.get_json(
-            f"{self.api_root}/issue/{key}", params=params,
+            f"{self.api_root}/issue/{key}",
+            params=params,
         )
 
     # ── Issue writes (M6 data plane) ─────────────────────────────────

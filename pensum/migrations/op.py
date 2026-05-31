@@ -14,7 +14,8 @@ prod's customfield_10501; the alias is the same).
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from pensum.exceptions import ConfigurationError
 from pensum.fields import _FieldType
@@ -46,24 +47,27 @@ async def create_custom_field(
     existing = ctx.state.custom_fields.get(alias)
     if existing is not None:
         # Idempotent path: fill in any missing options, return.
-        for opt_value in (options or []):
+        for opt_value in options or []:
             if opt_value not in existing.options:
                 opt_id = await ctx.engine.dialect.add_custom_field_option(
-                    existing.id, opt_value,
+                    existing.id,
+                    opt_value,
                 )
                 existing.options[opt_value] = opt_id
                 ctx.persist()
         return existing.id
 
     field_id = await ctx.engine.dialect.create_custom_field(
-        name=name, description=description, type_id=type.jira_type_id,
+        name=name,
+        description=description,
+        type_id=type.jira_type_id,
     )
     # Persist parent before any option create — a mid-loop failure leaves the
     # parent + already-created options on disk so a re-run gives the
     # alias-already-mapped error instead of silently duplicating the field.
     ctx.state.custom_fields[alias] = CustomFieldMapping(id=field_id, options={})
     ctx.persist()
-    for opt_value in (options or []):
+    for opt_value in options or []:
         opt_id = await ctx.engine.dialect.add_custom_field_option(field_id, opt_value)
         ctx.state.custom_fields[alias].options[opt_value] = opt_id
         ctx.persist()
@@ -80,7 +84,9 @@ async def update_custom_field(
     ctx = get_context()
     mapping = _require_existing("update_custom_field", alias, ctx.state.custom_fields)
     await ctx.engine.dialect.update_custom_field(
-        mapping.id, name=name, description=description,
+        mapping.id,
+        name=name,
+        description=description,
     )
 
 
@@ -89,7 +95,9 @@ async def add_custom_field_option(*, field_alias: str, value: str) -> str:
     new option id under state.custom_fields[alias].options[value]."""
     ctx = get_context()
     mapping = _require_existing(
-        "add_custom_field_option", field_alias, ctx.state.custom_fields,
+        "add_custom_field_option",
+        field_alias,
+        ctx.state.custom_fields,
     )
     if value in mapping.options:
         raise ConfigurationError(
@@ -108,7 +116,9 @@ async def remove_custom_field_option(*, field_alias: str, value: str) -> None:
     in destructive downgrades."""
     ctx = get_context()
     mapping = _require_existing(
-        "remove_custom_field_option", field_alias, ctx.state.custom_fields,
+        "remove_custom_field_option",
+        field_alias,
+        ctx.state.custom_fields,
     )
     opt_id = mapping.options.get(value)
     if opt_id is None:
@@ -169,7 +179,9 @@ async def update_screen(
     ctx = get_context()
     mapping = _require_existing("update_screen", alias, ctx.state.screens)
     await ctx.engine.dialect.update_screen(
-        mapping.id, name=name, description=description,
+        mapping.id,
+        name=name,
+        description=description,
     )
 
 
@@ -187,7 +199,10 @@ async def add_screen_tab(*, screen_alias: str, tab_name: str) -> str:
 
 
 async def add_screen_tab_field(
-    *, screen_alias: str, tab_name: str, field_alias: str,
+    *,
+    screen_alias: str,
+    tab_name: str,
+    field_alias: str,
 ) -> None:
     """Add a custom field (by alias) to a screen tab (by name)."""
     ctx = get_context()
@@ -198,9 +213,17 @@ async def add_screen_tab_field(
             f"add_screen_tab_field: screen {screen_alias!r} has no tab "
             f"named {tab_name!r}. Known tabs: {list(screen.tab_ids)}"
         )
-    field = _require_existing("add_screen_tab_field", field_alias, ctx.state.custom_fields)
+    # Custom fields resolve through state by alias; system fields ("Summary",
+    # "Description", etc.) are not in state and pass through as Jira field IDs
+    # (lowercase, spaces stripped, matching Jira's system-field id convention).
+    if field_alias in ctx.state.custom_fields:
+        field_id = ctx.state.custom_fields[field_alias].id
+    else:
+        field_id = field_alias.replace(" ", "").lower()
     await ctx.engine.dialect.add_screen_tab_field(
-        screen.id, tab_id, field_id=field.id,
+        screen.id,
+        tab_id,
+        field_id=field_id,
     )
 
 
@@ -220,17 +243,19 @@ async def create_screen_scheme(
     if existing is not None:
         return existing
     if "default" not in screens:
-        raise ConfigurationError(
-            "create_screen_scheme: `screens` must include a 'default' entry"
-        )
+        raise ConfigurationError("create_screen_scheme: `screens` must include a 'default' entry")
     resolved: dict[str, str] = {}
     for screen_op, screen_alias in screens.items():
         screen = _require_existing(
-            "create_screen_scheme", screen_alias, ctx.state.screens,
+            "create_screen_scheme",
+            screen_alias,
+            ctx.state.screens,
         )
         resolved[screen_op] = screen.id
     scheme_id = await ctx.engine.dialect.create_screen_scheme(
-        name=name, description=description, screens=resolved,
+        name=name,
+        description=description,
+        screens=resolved,
     )
     ctx.state.screen_schemes[alias] = SimpleMapping(id=scheme_id)
     return scheme_id
@@ -259,17 +284,20 @@ async def update_screen_scheme(
     resolved: dict[str, str] | None = None
     if screens is not None:
         if "default" not in screens:
-            raise ConfigurationError(
-                "update_screen_scheme: `screens` must include a 'default' entry"
-            )
+            raise ConfigurationError("update_screen_scheme: `screens` must include a 'default' entry")
         resolved = {}
         for screen_op, screen_alias in screens.items():
             screen = _require_existing(
-                "update_screen_scheme", screen_alias, ctx.state.screens,
+                "update_screen_scheme",
+                screen_alias,
+                ctx.state.screens,
             )
             resolved[screen_op] = screen.id
     await ctx.engine.dialect.update_screen_scheme(
-        mapping.id, name=name, description=description, screens=resolved,
+        mapping.id,
+        name=name,
+        description=description,
+        screens=resolved,
     )
 
 
@@ -290,16 +318,18 @@ async def create_issuetype_screen_scheme(
     if existing is not None:
         return existing
     if "default" not in mappings:
-        raise ConfigurationError(
-            "create_issuetype_screen_scheme: `mappings` must include 'default' issuetype"
-        )
+        raise ConfigurationError("create_issuetype_screen_scheme: `mappings` must include 'default' issuetype")
     resolved = _resolve_scheme_mappings(
-        ctx, "create_issuetype_screen_scheme", mappings,
+        ctx,
+        "create_issuetype_screen_scheme",
+        mappings,
         scheme_table=ctx.state.screen_schemes,
         scheme_key="screenSchemeId",
     )
     scheme_id = await ctx.engine.dialect.create_issuetype_screen_scheme(
-        name=name, description=description, mappings=resolved,
+        name=name,
+        description=description,
+        mappings=resolved,
     )
     ctx.state.issuetype_screen_schemes[alias] = SimpleMapping(id=scheme_id)
     return scheme_id
@@ -325,30 +355,38 @@ async def update_issuetype_screen_scheme(
     """Rename/re-describe and/or replace mappings on an ITSS."""
     ctx = get_context()
     mapping = _require_existing(
-        "update_issuetype_screen_scheme", alias, ctx.state.issuetype_screen_schemes,
+        "update_issuetype_screen_scheme",
+        alias,
+        ctx.state.issuetype_screen_schemes,
     )
     if name is not None or description is not None:
         await ctx.engine.dialect.update_issuetype_screen_scheme(
-            mapping.id, name=name, description=description,
+            mapping.id,
+            name=name,
+            description=description,
         )
     if mappings is not None:
         if "default" not in mappings:
-            raise ConfigurationError(
-                "update_issuetype_screen_scheme: `mappings` must include 'default' issuetype"
-            )
+            raise ConfigurationError("update_issuetype_screen_scheme: `mappings` must include 'default' issuetype")
         resolved = _resolve_scheme_mappings(
-            ctx, "update_issuetype_screen_scheme", mappings,
+            ctx,
+            "update_issuetype_screen_scheme",
+            mappings,
             scheme_table=ctx.state.screen_schemes,
             scheme_key="screenSchemeId",
         )
         await ctx.engine.dialect.set_issuetype_screen_scheme_mappings(
-            mapping.id, mappings=resolved,
+            mapping.id,
+            mappings=resolved,
         )
 
 
 # ── Field configurations ─────────────────────────────────────────────
 async def create_field_configuration(
-    *, alias: str, name: str, description: str = "",
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
 ) -> str:
     ctx = get_context()
     _require_alias(alias, "create_field_configuration")
@@ -356,7 +394,8 @@ async def create_field_configuration(
     if existing is not None:
         return existing
     fc_id = await ctx.engine.dialect.create_field_configuration(
-        name=name, description=description,
+        name=name,
+        description=description,
     )
     ctx.state.field_configurations[alias] = SimpleMapping(id=fc_id)
     return fc_id
@@ -382,14 +421,20 @@ async def set_field_configuration_item(
 ) -> None:
     ctx = get_context()
     fc = _require_existing(
-        "set_field_configuration_item", fc_alias, ctx.state.field_configurations,
+        "set_field_configuration_item",
+        fc_alias,
+        ctx.state.field_configurations,
     )
-    field = _require_existing(
-        "set_field_configuration_item", field_alias, ctx.state.custom_fields,
-    )
+    if field_alias in ctx.state.custom_fields:
+        field_id = ctx.state.custom_fields[field_alias].id
+    else:
+        field_id = field_alias.replace(" ", "").lower()
     await ctx.engine.dialect.set_field_configuration_item(
-        fc.id, field_id=field.id,
-        required=required, hidden=hidden, description=description,
+        fc.id,
+        field_id=field_id,
+        required=required,
+        hidden=hidden,
+        description=description,
     )
 
 
@@ -409,23 +454,25 @@ async def create_field_configuration_scheme(
     if existing is not None:
         return existing
     if "default" not in mappings:
-        raise ConfigurationError(
-            "create_field_configuration_scheme: `mappings` must include 'default' issuetype"
-        )
+        raise ConfigurationError("create_field_configuration_scheme: `mappings` must include 'default' issuetype")
     resolved = _resolve_scheme_mappings(
-        ctx, "create_field_configuration_scheme", mappings,
+        ctx,
+        "create_field_configuration_scheme",
+        mappings,
         scheme_table=ctx.state.field_configurations,
         scheme_key="fieldConfigurationId",
     )
     scheme_id = await ctx.engine.dialect.create_field_configuration_scheme(
-        name=name, description=description,
+        name=name,
+        description=description,
     )
     # Persist the FCS id before the mappings PUT so a network failure on the
     # PUT doesn't leak an untracked FCS into Jira.
     ctx.state.field_configuration_schemes[alias] = SimpleMapping(id=scheme_id)
     ctx.persist()
     await ctx.engine.dialect.set_field_configuration_scheme_mappings(
-        scheme_id, mappings=resolved,
+        scheme_id,
+        mappings=resolved,
     )
     return scheme_id
 
@@ -450,31 +497,39 @@ async def update_field_configuration_scheme(
     """Rename/re-describe and/or replace mappings on an FCS."""
     ctx = get_context()
     mapping = _require_existing(
-        "update_field_configuration_scheme", alias,
+        "update_field_configuration_scheme",
+        alias,
         ctx.state.field_configuration_schemes,
     )
     if name is not None or description is not None:
         await ctx.engine.dialect.update_field_configuration_scheme(
-            mapping.id, name=name, description=description,
+            mapping.id,
+            name=name,
+            description=description,
         )
     if mappings is not None:
         if "default" not in mappings:
-            raise ConfigurationError(
-                "update_field_configuration_scheme: `mappings` must include 'default' issuetype"
-            )
+            raise ConfigurationError("update_field_configuration_scheme: `mappings` must include 'default' issuetype")
         resolved = _resolve_scheme_mappings(
-            ctx, "update_field_configuration_scheme", mappings,
+            ctx,
+            "update_field_configuration_scheme",
+            mappings,
             scheme_table=ctx.state.field_configurations,
             scheme_key="fieldConfigurationId",
         )
         await ctx.engine.dialect.set_field_configuration_scheme_mappings(
-            mapping.id, mappings=resolved,
+            mapping.id,
+            mappings=resolved,
         )
 
 
 # ── Issue types ──────────────────────────────────────────────────────
 async def create_issuetype(
-    *, alias: str, name: str, description: str = "", subtask: bool = False,
+    *,
+    alias: str,
+    name: str,
+    description: str = "",
+    subtask: bool = False,
 ) -> str:
     ctx = get_context()
     _require_alias(alias, "create_issuetype")
@@ -482,7 +537,9 @@ async def create_issuetype(
     if existing is not None:
         return existing
     it_id = await ctx.engine.dialect.create_issuetype(
-        name=name, description=description, subtask=subtask,
+        name=name,
+        description=description,
+        subtask=subtask,
     )
     ctx.state.issuetypes[alias] = SimpleMapping(id=it_id)
     return it_id
@@ -507,7 +564,9 @@ async def update_issuetype(
     ctx = get_context()
     mapping = _require_existing("update_issuetype", alias, ctx.state.issuetypes)
     await ctx.engine.dialect.update_issuetype(
-        mapping.id, name=name, description=description,
+        mapping.id,
+        name=name,
+        description=description,
     )
 
 
@@ -535,17 +594,18 @@ async def create_project(
         return existing
     if style not in ("company-managed", "team-managed"):
         raise ConfigurationError(
-            f"create_project: unknown style {style!r}; expected "
-            f"'company-managed' or 'team-managed'"
+            f"create_project: unknown style {style!r}; expected 'company-managed' or 'team-managed'"
         )
     if style == "team-managed" and project_template_key is None:
         # Atlassian's default TMP Kanban template
-        project_template_key = (
-            "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
-        )
+        project_template_key = "com.pyxis.greenhopper.jira:gh-simplified-agility-kanban"
     proj_id = await ctx.engine.dialect.create_project(
-        key=key, name=name, project_type_key=project_type_key, lead=lead,
-        description=description, project_template_key=project_template_key,
+        key=key,
+        name=name,
+        project_type_key=project_type_key,
+        lead=lead,
+        description=description,
+        project_template_key=project_template_key,
     )
     ctx.state.projects[alias] = ProjectMapping(id=proj_id, style=style, key=key)
     return proj_id
@@ -562,7 +622,10 @@ async def update_project(
     ctx = get_context()
     mapping = _require_existing("update_project", alias, ctx.state.projects)
     await ctx.engine.dialect.update_project(
-        mapping.id, name=name, lead=lead, description=description,
+        mapping.id,
+        name=name,
+        lead=lead,
+        description=description,
     )
 
 
@@ -578,42 +641,58 @@ async def delete_project(*, alias: str, key: str) -> None:
 
 
 async def set_project_issuetype_screen_scheme(
-    *, project_alias: str, scheme_alias: str,
+    *,
+    project_alias: str,
+    scheme_alias: str,
 ) -> None:
     ctx = get_context()
     project = _require_existing(
-        "set_project_issuetype_screen_scheme", project_alias, ctx.state.projects,
+        "set_project_issuetype_screen_scheme",
+        project_alias,
+        ctx.state.projects,
     )
     _refuse_tmp(
-        project, project_alias, "set_project_issuetype_screen_scheme",
+        project,
+        project_alias,
+        "set_project_issuetype_screen_scheme",
         ctx.state.jira_url,
     )
     scheme = _require_existing(
-        "set_project_issuetype_screen_scheme", scheme_alias,
+        "set_project_issuetype_screen_scheme",
+        scheme_alias,
         ctx.state.issuetype_screen_schemes,
     )
     await ctx.engine.dialect.set_project_issuetype_screen_scheme(
-        project_id=project.id, scheme_id=scheme.id,
+        project_id=project.id,
+        scheme_id=scheme.id,
     )
 
 
 async def set_project_field_configuration_scheme(
-    *, project_alias: str, scheme_alias: str,
+    *,
+    project_alias: str,
+    scheme_alias: str,
 ) -> None:
     ctx = get_context()
     project = _require_existing(
-        "set_project_field_configuration_scheme", project_alias, ctx.state.projects,
+        "set_project_field_configuration_scheme",
+        project_alias,
+        ctx.state.projects,
     )
     _refuse_tmp(
-        project, project_alias, "set_project_field_configuration_scheme",
+        project,
+        project_alias,
+        "set_project_field_configuration_scheme",
         ctx.state.jira_url,
     )
     scheme = _require_existing(
-        "set_project_field_configuration_scheme", scheme_alias,
+        "set_project_field_configuration_scheme",
+        scheme_alias,
         ctx.state.field_configuration_schemes,
     )
     await ctx.engine.dialect.set_project_field_configuration_scheme(
-        project_id=project.id, scheme_id=scheme.id,
+        project_id=project.id,
+        scheme_id=scheme.id,
     )
 
 
@@ -634,12 +713,13 @@ def _require_alias(alias: str, op_name: str) -> None:
 
 
 def _refuse_existing(
-    op_name: str, alias: str, table: Mapping[str, Any],
+    op_name: str,
+    alias: str,
+    table: Mapping[str, Any],
 ) -> None:
     if alias in table:
         raise ConfigurationError(
-            f"{op_name}: alias {alias!r} already mapped to "
-            f"{table[alias].id!r} in state. Use update_* or delete first."
+            f"{op_name}: alias {alias!r} already mapped to {table[alias].id!r} in state. Use update_* or delete first."
         )
 
 
@@ -651,7 +731,10 @@ def _existing_id_or_none(table: Mapping[str, Any], alias: str) -> str | None:
 
 
 def _refuse_tmp(
-    project: Any, project_alias: str, op_name: str, jira_url: str,
+    project: Any,
+    project_alias: str,
+    op_name: str,
+    jira_url: str,
 ) -> None:
     """Raise UnsupportedTMPOpError if the target project is team-managed.
 
@@ -675,10 +758,7 @@ def _refuse_tmp(
 def _require_existing(op_name: str, alias: str, table: Mapping[str, Any]) -> Any:
     mapping = table.get(alias)
     if mapping is None:
-        raise ConfigurationError(
-            f"{op_name}: alias {alias!r} not present in state. "
-            f"Known: {sorted(table)}"
-        )
+        raise ConfigurationError(f"{op_name}: alias {alias!r} not present in state. Known: {sorted(table)}")
     return mapping
 
 

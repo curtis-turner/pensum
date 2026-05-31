@@ -21,6 +21,9 @@ class JiraCloudDialect(JiraDialectBase):
     name = "jira_cloud"
     api_root = "/rest/api/3"
     expected_deployment_type = "Cloud"
+    # Cloud's field-configuration items endpoint is /fieldconfiguration/{id}/fields
+    # (per the Cloud Platform OpenAPI). DC keeps the inherited /items default.
+    field_config_items_segment = "fields"
 
     async def _reflect_field_options(self, field_id: str) -> dict[str, str]:
         """Cloud option fetch goes through the field context.
@@ -45,9 +48,7 @@ class JiraCloudDialect(JiraDialectBase):
         """Cloud: POST options through the field context."""
         ctx_id = await self._default_context_id(field_id)
         if not ctx_id:
-            raise ReflectionError(
-                f"Cloud field {field_id} has no context; cannot add option {value!r}"
-            )
+            raise ReflectionError(f"Cloud field {field_id} has no context; cannot add option {value!r}")
         # The Cloud option endpoint accepts an array per call.
         result = await self.client.post_json(
             f"{self.api_root}/field/{field_id}/context/{ctx_id}/option",
@@ -55,9 +56,7 @@ class JiraCloudDialect(JiraDialectBase):
         )
         values = (result or {}).get("options") or []
         if not values or "id" not in values[0]:
-            raise ReflectionError(
-                f"Cloud add-option for {field_id} returned no id: {result!r}"
-            )
+            raise ReflectionError(f"Cloud add-option for {field_id} returned no id: {result!r}")
         return str(values[0]["id"])
 
     async def create_project(
@@ -107,11 +106,16 @@ class JiraCloudDialect(JiraDialectBase):
         if not body:
             return
         await self.client.put_json(
-            f"{self.api_root}/project/{project_id}", json=body,
+            f"{self.api_root}/project/{project_id}",
+            json=body,
         )
 
     async def search(
-        self, *, jql: str, fields: list[str], page_size: int = 50,
+        self,
+        *,
+        jql: str,
+        fields: list[str],
+        page_size: int = 50,
     ):
         """Cloud's newer search uses POST /search/jql with nextPageToken pagination."""
         next_token: str | None = None
@@ -124,7 +128,8 @@ class JiraCloudDialect(JiraDialectBase):
             if next_token:
                 body_in["nextPageToken"] = next_token
             body = await self.client.post_json(
-                f"{self.api_root}/search/jql", json=body_in,
+                f"{self.api_root}/search/jql",
+                json=body_in,
             )
             issues = body.get("issues", []) if isinstance(body, dict) else []
             for issue in issues:
@@ -134,23 +139,19 @@ class JiraCloudDialect(JiraDialectBase):
                 return
 
     async def delete_custom_field_option(
-        self, field_id: str, option_id: str,
+        self,
+        field_id: str,
+        option_id: str,
     ) -> None:
         """Cloud option delete goes through the field context."""
         ctx_id = await self._default_context_id(field_id)
         if not ctx_id:
-            raise ReflectionError(
-                f"Cloud field {field_id} has no context; cannot delete option {option_id!r}"
-            )
-        await self.client.delete(
-            f"{self.api_root}/field/{field_id}/context/{ctx_id}/option/{option_id}"
-        )
+            raise ReflectionError(f"Cloud field {field_id} has no context; cannot delete option {option_id!r}")
+        await self.client.delete(f"{self.api_root}/field/{field_id}/context/{ctx_id}/option/{option_id}")
 
     async def _default_context_id(self, field_id: str) -> str | None:
         contexts: list[dict[str, Any]] = []
-        async for ctx in common.paginate(
-            self.client, f"{self.api_root}/field/{field_id}/context"
-        ):
+        async for ctx in common.paginate(self.client, f"{self.api_root}/field/{field_id}/context"):
             contexts.append(ctx)
         if not contexts:
             return None
