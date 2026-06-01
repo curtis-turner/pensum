@@ -719,6 +719,33 @@ async def test_create_issuetype_scheme_resolves_member_aliases_to_ids():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_create_issuetype_scheme_accepts_issueTypeSchemeId_response_shape():
+    """Atlassian Cloud's POST /issuetypescheme returns
+    {"issueTypeSchemeId": "..."} rather than the more common {"id": ...}
+    shape. Surfaced by the live-Cloud smoke; pinned in a unit test so the
+    next time someone narrows the response parser, this fails fast."""
+    respx.post(f"{DC_ROOT}/issuetypescheme").mock(return_value=httpx.Response(201, json={"issueTypeSchemeId": "10146"}))
+    state = StateFile(env="dev", jira_url=BASE)
+    state.issuetypes["bug"] = SimpleMapping(id="10010")
+    engine = _dc_engine()
+    try:
+        await _run_in_ctx(
+            engine,
+            state,
+            lambda: op.create_issuetype_scheme(
+                alias="PLAT_its",
+                name="Platform Issue Type Scheme",
+                issuetypes=["bug"],
+                default_issuetype="bug",
+            ),
+        )
+    finally:
+        await engine.close()
+    assert state.issuetype_schemes["PLAT_its"].id == "10146"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_set_project_issuetype_scheme():
     respx.put(
         f"{DC_ROOT}/issuetypescheme/project",

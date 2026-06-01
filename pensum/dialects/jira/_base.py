@@ -529,6 +529,10 @@ class JiraDialectBase:
             f"{self.api_root}/issuetypescheme",
             json=body,
         )
+        # Cloud returns {"issueTypeSchemeId": "..."} from this endpoint, unlike
+        # most create endpoints which return {"id": ...}.
+        if isinstance(result, dict) and "issueTypeSchemeId" in result:
+            return str(result["issueTypeSchemeId"])
         return _expect_id(result, f"POST {self.api_root}/issuetypescheme")
 
     async def update_issuetype_scheme(
