@@ -5,6 +5,7 @@ contexts; DC hits /option directly).
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 from typing import Any, ClassVar
 
@@ -124,7 +125,65 @@ class JiraDialectBase:
         async for entry in common.paginate(self.client, f"{self.api_root}/project/search"):
             proj = common.parse_project(entry)
             result[proj.key] = proj
+        if not result:
+            return result
+
+        # Resolve per-project scheme bindings so the diff can detect drift
+        # against existing projects (otherwise UpdateProject fires but no
+        # SetProject*Scheme — schema-declared schemes go unbound).
+        project_ids = [p.id for p in result.values()]
+        its_map = await self._reflect_project_scheme_bindings(
+            f"{self.api_root}/issuetypescheme/project",
+            project_ids=project_ids,
+            scheme_key="issueTypeScheme",
+        )
+        itss_map = await self._reflect_project_scheme_bindings(
+            f"{self.api_root}/issuetypescreenscheme/project",
+            project_ids=project_ids,
+            scheme_key="issueTypeScreenScheme",
+        )
+        fcs_map = await self._reflect_project_scheme_bindings(
+            f"{self.api_root}/fieldconfigurationscheme/project",
+            project_ids=project_ids,
+            scheme_key="fieldConfigurationScheme",
+        )
+        for key, proj in list(result.items()):
+            result[key] = dataclasses.replace(
+                proj,
+                issuetype_scheme_id=its_map.get(proj.id),
+                issuetype_screen_scheme_id=itss_map.get(proj.id),
+                field_configuration_scheme_id=fcs_map.get(proj.id),
+            )
         return result
+
+    async def _reflect_project_scheme_bindings(
+        self,
+        path: str,
+        *,
+        project_ids: list[str],
+        scheme_key: str,
+    ) -> dict[str, str]:
+        """Inverts Atlassian's project-scheme listing into a project_id→scheme_id map.
+
+        The endpoint returns ``{values: [{<scheme_key>: {id, ...}, projectIds: [...]}, ...]}``.
+        Entries without ``<scheme_key>`` are treated as "no explicit binding" and skipped
+        — those projects use Jira's default scheme and the ProjectSnapshot field stays None.
+        """
+        out: dict[str, str] = {}
+        async for entry in common.paginate(
+            self.client,
+            path,
+            extra_params={"projectId": project_ids},
+        ):
+            scheme = entry.get(scheme_key)
+            if not isinstance(scheme, dict):
+                continue
+            scheme_id = scheme.get("id")
+            if scheme_id is None:
+                continue
+            for pid in entry.get("projectIds") or []:
+                out[str(pid)] = str(scheme_id)
+        return out
 
     # ── Screens ──────────────────────────────────────────────────────
     async def _reflect_screens(self) -> dict[str, ScreenSnapshot]:

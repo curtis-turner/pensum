@@ -39,9 +39,12 @@ def _stub_empty(mock: respx.MockRouter) -> None:
         f"{DC_ROOT}/screenscheme",
         f"{DC_ROOT}/issuetypescheme",
         f"{DC_ROOT}/issuetypescheme/mapping",
+        f"{DC_ROOT}/issuetypescheme/project",
         f"{DC_ROOT}/issuetypescreenscheme",
+        f"{DC_ROOT}/issuetypescreenscheme/project",
         f"{DC_ROOT}/fieldconfiguration",
         f"{DC_ROOT}/fieldconfigurationscheme",
+        f"{DC_ROOT}/fieldconfigurationscheme/project",
     ):
         mock.get(path).mock(return_value=httpx.Response(200, json=_paginated([])))
 

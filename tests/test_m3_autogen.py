@@ -295,6 +295,92 @@ def test_diff_warns_on_state_id_missing_from_jira():
     assert any("not present in Jira" in w for w in result.warnings)
 
 
+def test_diff_emits_set_scheme_for_existing_project_with_drifted_binding():
+    """Issue #5: an existing project whose actual scheme bindings differ
+    from what the schema declares should emit SetProject*Scheme. The desired
+    schemes must already be in state — otherwise the create-side change owns
+    the binding (and this code path skips them)."""
+    import examples.platform  # noqa: F401
+    from pensum.autogen.diff import (
+        SetProjectFieldConfigurationScheme,
+        SetProjectIssueTypeScheme,
+    )
+    from pensum.state.file import ProjectMapping, SimpleMapping
+    from pensum.state.snapshot import ProjectSnapshot
+
+    desired = build_desired_snapshot()
+    state = StateFile(env="dev", jira_url="x")
+    # Project + schemes all already in state. ITSS matches what's on Jira,
+    # so it should NOT be re-bound. IssueTypeScheme + FCS are in state but
+    # the snapshot shows the project bound to *different* scheme ids.
+    state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
+    state.issuetype_schemes["PLAT_its"] = SimpleMapping(id="its-want")
+    state.issuetype_screen_schemes["PLAT_itss"] = SimpleMapping(id="itss-want")
+    state.field_configuration_schemes["PLAT_fcs"] = SimpleMapping(id="fcs-want")
+    snapshot = Snapshot(
+        server_info=ServerInfoSnapshot(deployment_type="Server", version="9", base_url="x"),
+        projects={
+            "PLAT": ProjectSnapshot(
+                id="p-1",
+                key="PLAT",
+                name="Platform",
+                lead="cturner",
+                project_type_key="software",
+                style="classic",
+                issuetype_scheme_id="its-other",  # drift!
+                issuetype_screen_scheme_id="itss-want",  # in sync
+                field_configuration_scheme_id=None,  # never bound
+            ),
+        },
+    )
+    result = diff(desired=desired, snapshot=snapshot, state=state, allow_delete=False)
+    kinds = {type(c).__name__ for c in result.changes}
+    assert "SetProjectIssueTypeScheme" in kinds
+    assert "SetProjectFieldConfigurationScheme" in kinds
+    # In-sync ITSS produces no rebind.
+    set_itss = [c for c in result.changes if isinstance(c, SetProjectIssueTypeScreenScheme)]
+    assert set_itss == []
+    # The two emitted rebinds reference the right project + scheme aliases.
+    its_change = next(c for c in result.changes if isinstance(c, SetProjectIssueTypeScheme))
+    assert its_change.project_alias == "PLAT" and its_change.scheme_alias == "PLAT_its"
+    fcs_change = next(c for c in result.changes if isinstance(c, SetProjectFieldConfigurationScheme))
+    assert fcs_change.project_alias == "PLAT" and fcs_change.scheme_alias == "PLAT_fcs"
+
+
+def test_diff_skips_set_scheme_when_desired_alias_not_yet_in_state():
+    """When the desired scheme is *also* being created in this migration
+    (so its alias isn't in state yet), the create-side change owns the
+    binding. The existing-project rebind must not also fire — otherwise
+    the migration would call set_project_*_scheme before state has the
+    new scheme's id."""
+    import examples.platform  # noqa: F401
+    from pensum.state.file import ProjectMapping
+    from pensum.state.snapshot import ProjectSnapshot
+
+    desired = build_desired_snapshot()
+    state = StateFile(env="dev", jira_url="x")
+    state.projects["PLAT"] = ProjectMapping(id="p-1", key="PLAT")
+    # Note: state.issuetype_schemes etc. are intentionally empty.
+    snapshot = Snapshot(
+        server_info=ServerInfoSnapshot(deployment_type="Server", version="9", base_url="x"),
+        projects={
+            "PLAT": ProjectSnapshot(
+                id="p-1",
+                key="PLAT",
+                name="Platform",
+                lead="cturner",
+                project_type_key="software",
+                style="classic",
+            ),
+        },
+    )
+    result = diff(desired=desired, snapshot=snapshot, state=state, allow_delete=False)
+    kinds = {type(c).__name__ for c in result.changes}
+    assert "SetProjectIssueTypeScheme" not in kinds
+    assert "SetProjectIssueTypeScreenScheme" not in kinds
+    assert "SetProjectFieldConfigurationScheme" not in kinds
+
+
 # ── Sort ─────────────────────────────────────────────────────────────
 def test_sort_orders_phases_correctly():
     """A jumbled change list comes out phase-ordered: fields before screens,

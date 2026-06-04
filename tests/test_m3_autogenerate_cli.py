@@ -47,9 +47,12 @@ def _stub_empty_jira(mock):
         "/screenscheme",
         "/issuetypescheme",
         "/issuetypescheme/mapping",
+        "/issuetypescheme/project",
         "/issuetypescreenscheme",
+        "/issuetypescreenscheme/project",
         "/fieldconfiguration",
         "/fieldconfigurationscheme",
+        "/fieldconfigurationscheme/project",
     ):
         mock.get(f"{DC_ROOT}{path}").mock(return_value=httpx.Response(200, json=_paginated([])))
 

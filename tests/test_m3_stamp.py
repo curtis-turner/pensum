@@ -258,7 +258,9 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     )
     respx.get(f"{DC_ROOT}/issuetypescheme").mock(return_value=httpx.Response(200, json=_paginated([])))
     respx.get(f"{DC_ROOT}/issuetypescheme/mapping").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{DC_ROOT}/issuetypescheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
     respx.get(f"{DC_ROOT}/issuetypescreenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{DC_ROOT}/issuetypescreenscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
     respx.get(f"{DC_ROOT}/fieldconfiguration").mock(
         return_value=httpx.Response(
             200,
@@ -271,6 +273,7 @@ def test_cli_stamp_smoke(tmp_path, monkeypatch, capsys):
     )
     respx.get(f"{DC_ROOT}/fieldconfiguration/fc-1/items").mock(return_value=httpx.Response(200, json=_paginated([])))
     respx.get(f"{DC_ROOT}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    respx.get(f"{DC_ROOT}/fieldconfigurationscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
 
     state_path = tmp_path / "state.yaml"
     monkeypatch.setenv("PENSUM_TOKEN", "tok")

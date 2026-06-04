@@ -855,6 +855,33 @@ def _diff_projects(
                     lead=lead_change,
                 )
             )
+        # Scheme rebinds when the project's actual binding drifts from desired.
+        # Skip when the desired scheme alias isn't yet in state — the create-
+        # side change emits the binding for newly-created schemes.
+        _maybe_emit_set_scheme(
+            r,
+            project_alias=alias,
+            desired_scheme=want.issuetype_scheme,
+            state_table=state.issuetype_schemes,
+            actual_id=actual.issuetype_scheme_id,
+            change_cls=SetProjectIssueTypeScheme,
+        )
+        _maybe_emit_set_scheme(
+            r,
+            project_alias=alias,
+            desired_scheme=want.issuetype_screen_scheme,
+            state_table=state.issuetype_screen_schemes,
+            actual_id=actual.issuetype_screen_scheme_id,
+            change_cls=SetProjectIssueTypeScreenScheme,
+        )
+        _maybe_emit_set_scheme(
+            r,
+            project_alias=alias,
+            desired_scheme=want.field_configuration_scheme,
+            state_table=state.field_configuration_schemes,
+            actual_id=actual.field_configuration_scheme_id,
+            change_cls=SetProjectFieldConfigurationScheme,
+        )
 
     if allow_delete:
         for alias in sorted(state.projects):
@@ -876,6 +903,34 @@ def _resolve_project_key(
         if proj.id == project_id:
             return proj.key
     return None
+
+
+def _maybe_emit_set_scheme(
+    r: DiffResult,
+    *,
+    project_alias: str,
+    desired_scheme: str | None,
+    state_table: dict,
+    actual_id: str | None,
+    change_cls: type,
+) -> None:
+    """Emit a SetProject*Scheme change when the existing project's binding
+    drifts from what the schema declares.
+
+    Skipped (no-op) when:
+      - the schema doesn't declare a scheme for this project (nothing to bind)
+      - the desired scheme alias isn't in state yet (it's being created in the
+        same migration; the create-side handles the binding)
+      - the actual binding already matches the desired one (in-sync)
+    """
+    if desired_scheme is None:
+        return
+    desired_mapping = state_table.get(desired_scheme)
+    if desired_mapping is None:
+        return
+    if actual_id == desired_mapping.id:
+        return
+    r.changes.append(change_cls(project_alias=project_alias, scheme_alias=desired_scheme))
 
 
 def _find_project_by_id(snapshot: Snapshot, project_id: str):

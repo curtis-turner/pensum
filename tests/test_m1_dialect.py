@@ -52,9 +52,12 @@ def _stub_empty_admin(mock: respx.MockRouter, root: str = DC_ROOT) -> None:
     mock.get(f"{root}/screenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/issuetypescheme").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/issuetypescheme/mapping").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{root}/issuetypescheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/issuetypescreenscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{root}/issuetypescreenscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/fieldconfiguration").mock(return_value=httpx.Response(200, json=_paginated([])))
     mock.get(f"{root}/fieldconfigurationscheme").mock(return_value=httpx.Response(200, json=_paginated([])))
+    mock.get(f"{root}/fieldconfigurationscheme/project").mock(return_value=httpx.Response(200, json=_paginated([])))
 
 
 # ── detect() ──────────────────────────────────────────────────────────
@@ -221,6 +224,68 @@ async def test_reflect_captures_projects():
     plat = snap.projects["PLAT"]
     assert plat.lead == "cturner"
     assert plat.project_type_key == "software"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reflect_populates_project_scheme_bindings():
+    """Reflect must look up each project's current IssueTypeScheme,
+    IssueTypeScreenScheme, and FieldConfigurationScheme so the diff can
+    detect drift against existing projects (issue #5)."""
+    _stub_empty_admin(respx.mock)
+    respx.get(f"{DC_ROOT}/project/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {"id": "10000", "key": "PLAT", "name": "Platform", "projectTypeKey": "software"},
+                    {"id": "10010", "key": "DOCS", "name": "Documentation", "projectTypeKey": "business"},
+                ]
+            ),
+        )
+    )
+    respx.get(f"{DC_ROOT}/issuetypescheme/project").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {"issueTypeScheme": {"id": "20000", "name": "Default"}, "projectIds": ["10000", "10010"]},
+                    {"issueTypeScheme": {"id": "20001", "name": "Platform ITS"}, "projectIds": ["10000"]},
+                ]
+            ),
+        )
+    )
+    respx.get(f"{DC_ROOT}/issuetypescreenscheme/project").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated([{"issueTypeScreenScheme": {"id": "30000"}, "projectIds": ["10000"]}]),
+        )
+    )
+    respx.get(f"{DC_ROOT}/fieldconfigurationscheme/project").mock(
+        return_value=httpx.Response(
+            200,
+            json=_paginated(
+                [
+                    {"projectIds": ["10010"]},  # no scheme key → uses default, ignored
+                    {"fieldConfigurationScheme": {"id": "40000"}, "projectIds": ["10000"]},
+                ]
+            ),
+        )
+    )
+    async with _dc_engine() as eng:
+        snap = await eng.reflect()
+    plat = snap.projects["PLAT"]
+    docs = snap.projects["DOCS"]
+    # Last writer wins when a project shows up in two scheme entries; here
+    # PLAT is in both default and Platform ITS, so the second one wins.
+    assert plat.issuetype_scheme_id == "20001"
+    assert plat.issuetype_screen_scheme_id == "30000"
+    assert plat.field_configuration_scheme_id == "40000"
+    # DOCS is bound to the default IssueTypeScheme but has no explicit
+    # ITSS / FCS binding → both stay None.
+    assert docs.issuetype_scheme_id == "20000"
+    assert docs.issuetype_screen_scheme_id is None
+    assert docs.field_configuration_scheme_id is None
 
 
 # ── reflect(): screens, screen schemes, ITSS ─────────────────────────
